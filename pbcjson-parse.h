@@ -1,17 +1,16 @@
-#include <...>
+#ifndef __PBC_JSON_PARSER_H_
+#define __PBC_JSON_PARSER_H_
+
+#if !defined(PBC_JSON_DO_NOT_INCLUDE_PROTOBUF_C_H)
+#  include <protobuf-c.h>
+#endif
 
 typedef struct PBC_JSON_ParserError {
   const char *error_message;
 
-  //TODO: stack
+  PBC_JSON_ParserErrorCode error_code;
 
-  /* For ignorable errors:
-   *      returning TRUE from ParserErrorCallback will cause processing to continue.
-   *      returning FALSE from ParserErrorCallback will cause pbc_json_parser_feed to return FALSE.
-   * For non-ignorable:
-   *      the ParserErrorCallback ret-val is ignored, and treated as FALSE.
-   */
-  unsigned is_ignorable : 1;
+  //TODO: stack
 } PBC_JSON_ParserError;
 
 
@@ -34,7 +33,7 @@ struct PBC_JSON_ParserOptions {
 };
 
 #define PBC_JSON_PARSER_OPTIONS_INIT { \
-  32            /* max_stack_depth */ \
+  64            /* max_stack_depth */  \
 }
 
 
@@ -62,7 +61,11 @@ ProtobufCMessage* pbc_json_parse         (ProtobufCMessageDescriptor  *message_d
                                           PBC_JSON_ParserError       **error_out);
 void              pbc_json_parse_free    (ProtobufCMessage            *msg);
 
+
+
 // Example parsing a single record:
 //   
 // Example parsing a stream of records:
 //   
+
+#endif
