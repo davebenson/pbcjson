@@ -9,11 +9,14 @@
 // This macro is available to make all the functions static.
 // Which is what we do in pbcjson since i don't want to expose these symbols;
 // we simply:
-//       #define JSON_VALIDATOR_FUNC  static
+//       #define JSON_VALIDATOR_FUNC_DECL  static
 //       #define "json-validator.c"
 //
-#ifndef JSON_VALIDATOR_FUNC
-#define JSON_VALIDATOR_FUNC
+#ifndef JSON_VALIDATOR_FUNC_DECL
+#define JSON_VALIDATOR_FUNC_DECL
+#endif
+#ifndef JSON_VALIDATOR_FUNC_DEF
+#define JSON_VALIDATOR_FUNC_DEF  JSON_VALIDATOR_FUNC_DECL
 #endif
 
 typedef struct JSON_Validator_Options JSON_Validator_Options;
@@ -28,6 +31,7 @@ typedef enum
   JSON_VALIDATOR_ENCAPSULATION_COMMA_SEP,
   JSON_VALIDATOR_ENCAPSULATION_LINE_BY_LINE,      /* possibly optimized */
   JSON_VALIDATOR_ENCAPSULATION_ARRAY,
+  JSON_VALIDATOR_ENCAPSULATION_SINGLE_OBJECT
 } JSON_Validator_Encapsulation;
         
 struct JSON_Validator_Options {
@@ -37,11 +41,14 @@ struct JSON_Validator_Options {
   unsigned ignore_utf8_errors : 1;
   unsigned ignore_utf16_errors : 1;
   unsigned ignore_utf8_surrogate_pairs : 1;
+  unsigned permit_backslash_x : 1;
   unsigned permit_trailing_commas : 1;
   unsigned ignore_comments : 1;
   unsigned allow_bare_fieldnames : 1;
   unsigned permit_single_quote_strings : 1;
-  unsigned permit_leading_decimal_numbers : 1;
+  unsigned permit_leading_decimal_point : 1;
+  unsigned permit_hex_numbers : 1;
+  unsigned permit_octal_numbers : 1;
   unsigned disallow_extra_whitespace : 1;
   unsigned permit_line_continuations_in_strings : 1;
 
@@ -57,6 +64,8 @@ struct JSON_Validator_Options {
   unsigned start_line_number;
 };
 
+#define JSON_VALIDATOR_OPTIONS_INIT ...        /// JSON
+#define JSON_VALIDATOR_OPTIONS_INIT_JSON5 ...  /// JSON5
 
 typedef enum
 {
@@ -70,15 +79,20 @@ typedef enum
 {
   JSON_VALIDATOR_ERROR_NONE,
 
-  JSON_VALIDATOR_ERROR_EXPECTED_DOUBLE_QUOTE,
+  JSON_VALIDATOR_ERROR_EXPECTED_MEMBER_NAME,
   JSON_VALIDATOR_ERROR_EXPECTED_COLON,
   JSON_VALIDATOR_ERROR_EXPECTED_VALUE,
   JSON_VALIDATOR_ERROR_EXPECTED_COMMA_OR_RBRACKET,
   JSON_VALIDATOR_ERROR_EXPECTED_COMMA_OR_RBRACE,
   JSON_VALIDATOR_ERROR_EXPECTED_ARRAY_START,
+  JSON_VALIDATOR_ERROR_EXPECTED_HEX_DIGIT,
+  JSON_VALIDATOR_ERROR_EXPECTED_EOF,
+  JSON_VALIDATOR_ERROR_EXPECTED_STRUCTURED_VALUE,
   JSON_VALIDATOR_ERROR_EXTRA_COMMA,
-  JSON_VALIDATOR_ERROR_BAD_NUMBER,
+  JSON_VALIDATOR_ERROR_SINGLE_QUOTED_STRING_NOT_ALLOWED,
   JSON_VALIDATOR_ERROR_STACK_DEPTH_EXCEEDED,
+  JSON_VALIDATOR_ERROR_UNEXPECTED_CHAR,
+  JSON_VALIDATOR_ERROR_BAD_BAREWORD,
 
   // errors that can occur while validating a string.
   JSON_VALIDATOR_ERROR_UTF8_OVERLONG,
@@ -89,6 +103,17 @@ typedef enum
   JSON_VALIDATOR_ERROR_STRING_CONTROL_CHARACTER,
   JSON_VALIDATOR_ERROR_QUOTED_NEWLINE,
   JSON_VALIDATOR_ERROR_DIGIT_NOT_ALLOWED_AFTER_NUL,
+  JSON_VALIDATOR_ERROR_BACKSLASH_X_NOT_ALLOWED,
+
+  // errors that can occur while validating a number
+  JSON_VALIDATOR_ERROR_HEX_NOT_ALLOWED,
+  JSON_VALIDATOR_ERROR_OCTAL_NOT_ALLOWED,
+  JSON_VALIDATOR_ERROR_NON_OCTAL_DIGIT,
+  JSON_VALIDATOR_ERROR_LEADING_DECIMAL_POINT_NOT_ALLOWED,
+  JSON_VALIDATOR_ERROR_TRAILING_DECIMAL_POINT_NOT_ALLOWED,
+  JSON_VALIDATOR_ERROR_BAD_NUMBER,
+
+
 } JSON_ValidatorError;
 
 typedef enum
@@ -99,19 +124,19 @@ typedef enum
 //---------------------------------------------------------------------
 //                           Functions
 //---------------------------------------------------------------------
-JSON_VALIDATOR_FUNC
+JSON_VALIDATOR_FUNC_DECL
 size_t
 json_validator_options_get_memory_size (const JSON_Validator_Options *options);
 
 // note thtat JSON_Validator allocates no further memory, so there
-JSON_VALIDATOR_FUNC
+JSON_VALIDATOR_FUNC_DECL
 JSON_Validator *
 json_validator_init (void *memory,
                      const JSON_Validator_Options *options);
  
 
 
-JSON_VALIDATOR_FUNC
+JSON_VALIDATOR_FUNC_DECL
 JSON_ValidatorResult
 json_validator_feed (JSON_Validator *validator,
                      size_t          len,
@@ -119,12 +144,12 @@ json_validator_feed (JSON_Validator *validator,
                      size_t         *used);
 
 
-JSON_VALIDATOR_FUNC
+JSON_VALIDATOR_FUNC_DECL
 JSON_ValidatorResult
 json_validator_end_feed (JSON_Validator *validator);
 
 
-JSON_VALIDATOR_FUNC
+JSON_VALIDATOR_FUNC_DECL
 JSON_ValidatorError
 json_validator_get_error_info(JSON_Validator *validator);
 
