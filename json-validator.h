@@ -44,6 +44,7 @@ struct JSON_Validator_Options {
   unsigned permit_backslash_x : 1;
   unsigned permit_trailing_commas : 1;
   unsigned ignore_comments : 1;
+  unsigned permit_multiple_commas : 1;
   unsigned allow_bare_fieldnames : 1;
   unsigned permit_single_quote_strings : 1;
   unsigned permit_leading_decimal_point : 1;
@@ -113,6 +114,7 @@ typedef enum
   JSON_VALIDATOR_ERROR_TRAILING_DECIMAL_POINT_NOT_ALLOWED,
   JSON_VALIDATOR_ERROR_BAD_NUMBER,
 
+  JSON_VALIDATOR_ERROR_INTERNAL,
 
 } JSON_ValidatorError;
 

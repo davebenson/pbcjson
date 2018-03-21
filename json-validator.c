@@ -28,6 +28,7 @@ typedef enum
   JSON_VALIDATOR_STATE_INTERIM_IN_ARRAY_GOT_COMMA,
   JSON_VALIDATOR_STATE_INTERIM_IN_ARRAY_INITIAL,
   JSON_VALIDATOR_STATE_INTERIM_IN_ARRAY_VALUE,  // flat_value_state is valid
+  JSON_VALIDATOR_STATE_INTERIM_EXPECTING_COMMA,
   JSON_VALIDATOR_STATE_INTERIM_EXPECTING_EOL,
   JSON_VALIDATOR_STATE_IN_ARRAY,
   JSON_VALIDATOR_STATE_IN_FLAT_VALUE,   // flat_value_state is valid
@@ -1042,11 +1043,15 @@ json_validator_feed (JSON_Validator *validator,
             SET_STATE(INTERIM_EXPECTING_EOL);                         \
           case JSON_VALIDATOR_ENCAPSULATION_WHITESPACE_SEP:           \
             SET_STATE(INTERIM);                                       \
+          case JSON_VALIDATOR_ENCAPSULATION_COMMA_SEP:                \
+            SET_STATE(INTERIM_EXPECTING_COMMA);                       \
+          case JSON_VALIDATOR_ENCAPSULATION_SINGLE_OBJECT:            \
+            SET_STATE(EXPECTING_EOF);                                 \
           }                                                           \
         assert(0);                                                    \
         RETURN_ERROR(INTERNAL);                                       \
       }                                                               \
-    else if (validator->stack[validator->stack_depth].is_object)      \
+    else if (validator->stack_nodes[validator->stack_depth].is_object)\
       SET_STATE(IN_OBJECT);                                           \
     else                                                              \
       SET_STATE(IN_ARRAY);                                            \
@@ -1107,6 +1112,23 @@ json_validator_feed (JSON_Validator *validator,
               }
             break;
 
+          CASE(INTERIM_EXPECTING_COMMA):
+            if (*at == ',') 
+              {
+                at++;
+                SET_STATE(INTERIM);
+              }
+            else if (IS_SPACE(*at))
+              {
+                at++;
+                continue;
+              }
+            else
+              {
+                RETURN_ERROR(UNEXPECTED_CHAR);
+              }
+
+            
           CASE(INTERIM_IN_ARRAY_INITIAL):
             if (*at == '[')
               {
@@ -1147,9 +1169,11 @@ json_validator_feed (JSON_Validator *validator,
                   RETURN_ERROR(UNEXPECTED_CHAR);
                 POP();
               }
-            else if (is_flat_value_char (*at))
+            else if (is_flat_value_char (validator, *at))
               {
-                ...
+                validator->flat_value_state = initial_flat_value_state(*at);
+                at++;
+                SET_STATE(INTERIM_IN_ARRAY_VALUE);
               }
             else if (*at == '[')
               {
@@ -1170,12 +1194,12 @@ json_validator_feed (JSON_Validator *validator,
           // non-structured 
           CASE(INTERIM_IN_ARRAY_VALUE):
             {
-            unsigned fv_used = 0;
-            switch (flat_value_scan (validator, end-at, at, &fv_used))
+            size_t fv_used = 0;
+            switch (scan_flat_value (validator, end-at, at, &fv_used))
               {
               case SCAN_END:
                 at += fv_used;
-                SET_STATE(IN_ARRAY_VALUE_EXPECTING_COMMA);
+                SET_STATE(INTERIM_IN_ARRAY_EXPECTING_COMMA);
 
               case SCAN_ERROR:
                 at += fv_used;
@@ -1188,7 +1212,7 @@ json_validator_feed (JSON_Validator *validator,
               assert(0);
             }
 
-          CASE(INTERIM_IN_ARRAY_VALUE_EXPECTING_COMMA):
+          CASE(INTERIM_IN_ARRAY_EXPECTING_COMMA):
             SKIP_WS();
             if (*at == ',')
               {
