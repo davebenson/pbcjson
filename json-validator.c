@@ -4,15 +4,16 @@
 
 
 #define IS_SPACE(c)  ((c)=='\t' || (c)=='\r' || (c)==' ' || (c)=='\n')
-#define IS_HEX_DIGIT(c)    (('0' <= (c) && (c) <= '9')               \
-                          || ('a' <= (c) && (c) <= 'f')              \
+#define IS_HEX_DIGIT(c)     (('0' <= (c) && (c) <= '9')                 \
+                          || ('a' <= (c) && (c) <= 'f')                 \
                           || ('A' <= (c) && (c) <= 'F'))
 #define IS_OCT_DIGIT(c)    ('0' <= (c) && (c) <= '7')
 #define IS_DIGIT(c)    ('0' <= (c) && (c) <= '9')
 
-#define IS_ALNUM(c)       (('0' <= (c) && (c) <= '0')               \
-                          || ('a' <= (c) && (c) <= 'z')              \
+#define IS_ASCII_ALPHA(c)   (('a' <= (c) && (c) <= 'z')                 \
                           || ('A' <= (c) && (c) <= 'Z'))
+#define IS_ALNUM(c)       (('0' <= (c) && (c) <= '0')                   \
+                          || IS_ASCII_ALPHA(c))
 
 #define IS_HI_SURROGATE(u) (0xd800 <= (u) && (u) <= (0xd800 + 2047 - 64))
 #define IS_LO_SURROGATE(u) (0xdc00 <= (u) && (u) <= (0xdc00 + 1023))
@@ -23,30 +24,33 @@
 typedef enum
 {
   JSON_VALIDATOR_STATE_INTERIM,
-  JSON_VALIDATOR_STATE_INTERIM_IN_ARRAY_COMMA_NOT_ALLOWED,
   JSON_VALIDATOR_STATE_INTERIM_IN_ARRAY_EXPECTING_COMMA,
   JSON_VALIDATOR_STATE_INTERIM_IN_ARRAY_GOT_COMMA,
   JSON_VALIDATOR_STATE_INTERIM_IN_ARRAY_INITIAL,
   JSON_VALIDATOR_STATE_INTERIM_IN_ARRAY_VALUE,  // flat_value_state is valid
   JSON_VALIDATOR_STATE_INTERIM_EXPECTING_COMMA,
+  JSON_VALIDATOR_STATE_INTERIM_GOT_COMMA,
   JSON_VALIDATOR_STATE_INTERIM_EXPECTING_EOL,
+  JSON_VALIDATOR_STATE_INTERIM_EXPECTING_EOF,
+  JSON_VALIDATOR_STATE_INTERIM_VALUE,
   JSON_VALIDATOR_STATE_IN_ARRAY,
-  JSON_VALIDATOR_STATE_IN_FLAT_VALUE,   // flat_value_state is valid
+  JSON_VALIDATOR_STATE_IN_ARRAY_EXPECTING_COMMA,
+  JSON_VALIDATOR_STATE_IN_ARRAY_GOT_COMMA,
+  JSON_VALIDATOR_STATE_IN_ARRAY_VALUE,   // flat_value_state is valid
   JSON_VALIDATOR_STATE_IN_OBJECT,
   JSON_VALIDATOR_STATE_IN_OBJECT_AWAITING_COLON,
   JSON_VALIDATOR_STATE_IN_OBJECT_FIELDNAME,     // flat_value_state is valid
   JSON_VALIDATOR_STATE_IN_OBJECT_BARE_FIELDNAME,
-  JSON_VALIDATOR_STATE_IN_OBJECT_INITIAL,
   JSON_VALIDATOR_STATE_IN_OBJECT_VALUE, // flat_value_state is valid
   JSON_VALIDATOR_STATE_IN_OBJECT_VALUE_SPACE,
-  JSON_VALIDATOR_STATE_EXPECTING_EOF
 } JSON_ValidatorState;
 
+#define state_is_interim(state) ((state) <= JSON_VALIDATOR_STATE_INTERIM_EXPECTING_EOL)
 
 // The flat-value-state is used to share the many substates possible for literal values.
 // The following states use this substate:
 //    JSON_VALIDATOR_STATE_INTERIM_IN_ARRAY_VALUE
-//    JSON_VALIDATOR_STATE_IN_FLAT_VALUE,
+//    JSON_VALIDATOR_STATE_IN_OBJECT_VALUE_SPACE
 typedef enum
 {
   // literal strings - parse states
@@ -84,6 +88,22 @@ typedef enum
 
 typedef enum
 {
+  WHITESPACE_STATE_DEFAULT,
+  WHITESPACE_STATE_SLASH,
+  WHITESPACE_STATE_EOL_COMMENT,
+  WHITESPACE_STATE_MULTILINE_COMMENT,
+  WHITESPACE_STATE_MULTILINE_COMMENT_STAR,
+  WHITESPACE_STATE_UTF8_E1,
+  WHITESPACE_STATE_UTF8_E2,
+  WHITESPACE_STATE_UTF8_E2_80,
+  WHITESPACE_STATE_UTF8_E2_81,
+  WHITESPACE_STATE_UTF8_E3,
+  WHITESPACE_STATE_UTF8_E3_80,
+} WhitespaceState;
+
+
+typedef enum
+{
   SCAN_END,
   SCAN_IN_VALUE,
   SCAN_ERROR
@@ -101,6 +121,10 @@ typedef enum
   UTF8_STATE_4_3,
 } UTF8State;
 
+
+typedef ScanResult (*WhitespaceScannerFunc) (JSON_Validator *validator,
+                                             const uint8_t **p_at,
+                                             const uint8_t  *end);
 
 
 #define FLAT_VALUE_STATE_MASK              0x3f
@@ -130,6 +154,9 @@ struct JSON_Validator {
   // this is for strings and numbers; we also use it for quoted object field names.
   FlatValueState flat_value_state;
 
+  WhitespaceScannerFunc whitespace_scanner;
+  WhitespaceState whitespace_state;
+
   // Meaning of these two members depends on flat_value_state:
   //    * backslash sequence or UTF8 partial character
   unsigned flat_len;
@@ -137,6 +164,361 @@ struct JSON_Validator {
 
   UTF8State utf8_state;
 };
+
+static ScanResult
+scan_whitespace_json   (JSON_Validator *validator,
+                        const uint8_t **p_at,
+                        const uint8_t  *end)
+{
+  const uint8_t *at = *p_at;
+  (void) validator;
+  while (at < end && IS_SPACE (*at))
+    at++;
+  *p_at = at;
+  return SCAN_END;
+}
+static ScanResult
+scan_whitespace_json5  (JSON_Validator *validator,
+                        const uint8_t **p_at,
+                        const uint8_t  *end)
+{
+#define CASE(shortname) case_##shortname: case WHITESPACE_STATE_##shortname
+#define GOTO_WHITESPACE_STATE(shortname)                      \
+do {                                                          \
+  validator->whitespace_state = WHITESPACE_STATE_##shortname; \
+  if (at == end) {                                            \
+    *p_at = at;                                               \
+    return SCAN_IN_VALUE;                                     \
+  }                                                           \
+  goto case_##shortname;                                      \
+} while(0)
+  const uint8_t *at = *p_at;
+  (void) validator;
+  switch (validator->whitespace_state)
+    {
+    CASE(DEFAULT):
+      while (at < end && IS_SPACE(*at))
+        at++;
+      if (*at == '/')
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(SLASH);
+        }
+      else if (*at == 0xe1)
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(UTF8_E1);
+        }
+      else if (*at == 0xe2)
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(UTF8_E2);
+        }
+      else if (*at == 0xe3)
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(UTF8_E3);
+        }
+      else
+        goto nonws_nonascii;
+    CASE(SLASH):
+      if (*at == '*')
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(MULTILINE_COMMENT);
+        }
+      else if (*at == '/')
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(EOL_COMMENT);
+        }
+      else
+        {
+          *p_at = at;
+          validator->error_code = JSON_VALIDATOR_ERROR_UNEXPECTED_CHAR;
+          return SCAN_ERROR;
+        }
+
+    CASE(EOL_COMMENT):
+      while (at < end && *at != '\n')
+        at++;
+      if (at == end)
+        {
+          *p_at = at;
+          return SCAN_IN_VALUE;
+        }
+      at++;
+      GOTO_WHITESPACE_STATE(DEFAULT);
+
+    CASE(MULTILINE_COMMENT):
+      while (at < end)
+        {
+          if (*at == '*')
+            {
+              at++;
+              GOTO_WHITESPACE_STATE(MULTILINE_COMMENT_STAR);
+            }
+          else
+            at++;
+        }
+      *p_at = at;
+      return SCAN_IN_VALUE;
+
+    CASE(MULTILINE_COMMENT_STAR):
+      if (*at == '/')
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(DEFAULT);
+        }
+      else if (*at == '*')
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(MULTILINE_COMMENT_STAR);
+        }
+      else
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(MULTILINE_COMMENT);
+        }
+
+    CASE(UTF8_E1):
+      if (*at == 0x9a)
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(DEFAULT);
+        }
+      else
+        goto nonws_nonascii;
+
+    CASE(UTF8_E2):
+      if (*at == 0x80)
+        GOTO_WHITESPACE_STATE(UTF8_E2_80);
+      else if (*at == 0x81)
+        GOTO_WHITESPACE_STATE(UTF8_E2_81);
+      else
+        goto nonws_nonascii;
+    CASE(UTF8_E2_80):
+      if (*at == 0x80 /* u+2000 en quad */
+       || *at == 0x81 /* u+2001 em quad */
+       || *at == 0x84 /* u+2004 three-per-em space */
+       || *at == 0x85 /* u+2005 FOUR-PER-EM SPACE */
+       || *at == 0x87 /* u+2007 FIGURE SPACE  */
+       || *at == 0x88 /* u+2008 PUNCTUATION SPACE */
+       || *at == 0x89 /* u+2009 THIN SPACE  */
+       || *at == 0x8a /* u+200A HAIR SPACE  */
+       || *at == 0x8b)/* u+200B ZERO WIDTH SPACE  */
+      {
+        at++;
+        GOTO_WHITESPACE_STATE(DEFAULT);
+      }
+    CASE(UTF8_E2_81):
+      if (*at == 0x9f) /* U+205F MEDIUM MATHEMATICAL SPACE  */
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(DEFAULT);
+        }
+      else
+        goto nonws_nonascii;
+
+    CASE(UTF8_E3):
+      if (*at == 0x80)
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(UTF8_E3_80);
+        }
+      else
+        goto nonws_nonascii;
+
+    CASE(UTF8_E3_80):
+      if (*at == 0x80)
+        {
+          /* U+3000 IDEOGRAPHIC SPACE */
+          at++;
+          GOTO_WHITESPACE_STATE(DEFAULT);
+        }
+      else
+        goto nonws_nonascii;
+    }
+#undef CASE
+#undef GOTO_WHITESPACE_STATE
+
+
+nonws_nonascii:
+  validator->error_code = JSON_VALIDATOR_ERROR_UNEXPECTED_CHAR;
+  return SCAN_ERROR;
+}
+static ScanResult
+scan_whitespace_generic(JSON_Validator *validator,
+                        const uint8_t **p_at,
+                        const uint8_t  *end)
+{
+#define CASE(shortname) case_##shortname: case WHITESPACE_STATE_##shortname
+#define GOTO_WHITESPACE_STATE(shortname)                      \
+do {                                                          \
+  validator->whitespace_state = WHITESPACE_STATE_##shortname; \
+  if (at == end) {                                            \
+    *p_at = at;                                               \
+    return SCAN_IN_VALUE;                                     \
+  }                                                           \
+  goto case_##shortname;                                      \
+} while(0)
+  const uint8_t *at = *p_at;
+  (void) validator;
+  switch (validator->whitespace_state)
+    {
+    CASE(DEFAULT):
+      while (at < end && IS_SPACE(*at))
+        at++;
+      if (*at == '/' && (validator->options.ignore_single_line_comments
+                       || validator->options.ignore_multi_line_comments))
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(SLASH);
+        }
+      else if (*at == 0xe1 && validator->options.ignore_unicode_whitespace)
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(UTF8_E1);
+        }
+      else if (*at == 0xe2 && validator->options.ignore_unicode_whitespace)
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(UTF8_E2);
+        }
+      else if (*at == 0xe3 && validator->options.ignore_unicode_whitespace)
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(UTF8_E3);
+        }
+      else
+        goto nonws_nonascii;
+    CASE(SLASH):
+      if (*at == '*' && validator->options.ignore_multi_line_comments)
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(MULTILINE_COMMENT);
+        }
+      else if (*at == '/' && validator->options.ignore_single_line_comments)
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(EOL_COMMENT);
+        }
+      else
+        {
+          *p_at = at;
+          validator->error_code = JSON_VALIDATOR_ERROR_UNEXPECTED_CHAR;
+          return SCAN_ERROR;
+        }
+
+    CASE(EOL_COMMENT):
+      while (at < end && *at != '\n')
+        at++;
+      if (at == end)
+        {
+          *p_at = at;
+          return SCAN_IN_VALUE;
+        }
+      at++;
+      GOTO_WHITESPACE_STATE(DEFAULT);
+
+    CASE(MULTILINE_COMMENT):
+      while (at < end)
+        {
+          if (*at == '*')
+            {
+              at++;
+              GOTO_WHITESPACE_STATE(MULTILINE_COMMENT_STAR);
+            }
+          else
+            at++;
+        }
+      *p_at = at;
+      return SCAN_IN_VALUE;
+
+    CASE(MULTILINE_COMMENT_STAR):
+      if (*at == '/')
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(DEFAULT);
+        }
+      else if (*at == '*')
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(MULTILINE_COMMENT_STAR);
+        }
+      else
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(MULTILINE_COMMENT);
+        }
+
+    CASE(UTF8_E1):
+      if (*at == 0x9a)
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(DEFAULT);
+        }
+      else
+        goto nonws_nonascii;
+
+    CASE(UTF8_E2):
+      if (*at == 0x80)
+        GOTO_WHITESPACE_STATE(UTF8_E2_80);
+      else if (*at == 0x81)
+        GOTO_WHITESPACE_STATE(UTF8_E2_81);
+      else
+        goto nonws_nonascii;
+    CASE(UTF8_E2_80):
+      if (*at == 0x80 /* u+2000 en quad */
+       || *at == 0x81 /* u+2001 em quad */
+       || *at == 0x84 /* u+2004 three-per-em space */
+       || *at == 0x85 /* u+2005 FOUR-PER-EM SPACE */
+       || *at == 0x87 /* u+2007 FIGURE SPACE  */
+       || *at == 0x88 /* u+2008 PUNCTUATION SPACE */
+       || *at == 0x89 /* u+2009 THIN SPACE  */
+       || *at == 0x8a /* u+200A HAIR SPACE  */
+       || *at == 0x8b)/* u+200B ZERO WIDTH SPACE  */
+      {
+        at++;
+        GOTO_WHITESPACE_STATE(DEFAULT);
+      }
+    CASE(UTF8_E2_81):
+      if (*at == 0x9f) /* U+205F MEDIUM MATHEMATICAL SPACE  */
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(DEFAULT);
+        }
+      else
+        goto nonws_nonascii;
+
+    CASE(UTF8_E3):
+      if (*at == 0x80)
+        {
+          at++;
+          GOTO_WHITESPACE_STATE(UTF8_E3_80);
+        }
+      else
+        goto nonws_nonascii;
+
+    CASE(UTF8_E3_80):
+      if (*at == 0x80)
+        {
+          /* U+3000 IDEOGRAPHIC SPACE */
+          at++;
+          GOTO_WHITESPACE_STATE(DEFAULT);
+        }
+      else
+        goto nonws_nonascii;
+    }
+#undef CASE
+#undef GOTO_WHITESPACE_STATE
+
+
+nonws_nonascii:
+  validator->error_code = JSON_VALIDATOR_ERROR_UNEXPECTED_CHAR;
+  return SCAN_ERROR;
+}
+
 
 size_t
 json_validator_options_get_memory_size (const JSON_Validator_Options *options)
@@ -157,6 +539,22 @@ json_validator_init (void                         *memory,
   validator->stack_nodes = (JSON_Validator_StackNode *) (validator + 1);
   validator->state = JSON_VALIDATOR_STATE_INTERIM;
   validator->error_code = JSON_VALIDATOR_ERROR_NONE;
+
+  // select optimized whitespace scanner
+  if (!options->ignore_single_line_comments
+   && !options->ignore_multi_line_comments
+   && !options->disallow_extra_whitespace
+   && !options->ignore_unicode_whitespace)
+    validator->whitespace_scanner = scan_whitespace_json;
+  else
+  if ( options->ignore_single_line_comments
+   &&  options->ignore_multi_line_comments
+   && !options->disallow_extra_whitespace
+   &&  options->ignore_unicode_whitespace)
+    validator->whitespace_scanner = scan_whitespace_json5;
+  else
+    validator->whitespace_scanner = scan_whitespace_generic;
+    
   return validator;
 }
 
@@ -416,13 +814,12 @@ flat_value_state_to_end_quote_char (FlatValueState state)
 
 static ScanResult
 generic_bareword_handler (JSON_Validator *validator,
-                          const uint8_t *data,
-                          const uint8_t *at,
+                          const uint8_t**p_at,
                           const uint8_t *end,
-                          size_t        *used,
                           const char    *bareword,
                           size_t         bareword_len)
 {
+  const uint8_t *at = *p_at;
   while (at < end
       && validator->flat_len < bareword_len
       && (char)(*at) == bareword[validator->flat_len])
@@ -432,26 +829,25 @@ generic_bareword_handler (JSON_Validator *validator,
     }
   if (at == end)
     {
-      *used = at - data;
+      *p_at = at;
       return SCAN_IN_VALUE;
     }
   if (is_number_end_char(*at))
     {
-      *used = at - data;
+      *p_at = at;
       return SCAN_END;
     }
   validator->error_code = JSON_VALIDATOR_ERROR_BAD_BAREWORD;
-  *used = at - data;
+  *p_at = at;
   return SCAN_ERROR;
 }
 
 static ScanResult
 scan_flat_value (JSON_Validator *validator,
-                 size_t          len,
-                 const uint8_t  *data,
-                 size_t         *used)
+                 const uint8_t **p_at,
+                 const uint8_t  *end)
 {
-  const uint8_t *at = data, *end = data + len;
+  const uint8_t *at = *p_at;
   char end_quote_char;
 
 #define FLAT_VALUE_GOTO_STATE(st_shortname) \
@@ -477,7 +873,7 @@ scan_flat_value (JSON_Validator *validator,
             }
           else if (*at == end_quote_char)
             {
-              *used = (at + 1) - data;
+              *p_at = at + 1;
               return SCAN_END;
             }
           else if ((*at & 0x80) == 0)
@@ -498,13 +894,14 @@ scan_flat_value (JSON_Validator *validator,
                   assert(at == end);
                   FLAT_VALUE_STATE_REPLACE_ENUM_BITS(validator->flat_value_state,
                                                      FLAT_VALUE_STATE_IN_UTF8_CHAR);
-                  *used = len;
+                  *p_at = at;
                   return SCAN_IN_VALUE;
                 case SCAN_ERROR:
                   return SCAN_ERROR;
                 }
             }
         }
+      *p_at = at;
       return SCAN_IN_VALUE;
 
     case_IN_BACKSLASH_SEQUENCE:
@@ -567,7 +964,7 @@ scan_flat_value (JSON_Validator *validator,
               if (*at >= 0xf8)
                 {
                   validator->error_code = JSON_VALIDATOR_ERROR_UTF8_BAD_INITIAL_BYTE;
-                  *used = at - data;                                                     \
+                  *p_at = at;
                   return SCAN_ERROR;
                 }
               else
@@ -581,12 +978,12 @@ scan_flat_value (JSON_Validator *validator,
                       FLAT_VALUE_GOTO_STATE(STRING);
 
                     case SCAN_IN_VALUE:
-                      *used = len;
+                      *p_at = at;
                       validator->flat_value_state = FLAT_VALUE_STATE_IN_BACKSLASH_UTF8;
                       return SCAN_IN_VALUE;
 
                     case SCAN_ERROR:
-                      *used = len;
+                      *p_at = at;
                       return SCAN_ERROR;
                     }
                 }
@@ -610,12 +1007,12 @@ scan_flat_value (JSON_Validator *validator,
         FLAT_VALUE_GOTO_STATE(STRING);
       else if (at == end)
         {
-          *used = len;
+          *p_at = at;
           return SCAN_IN_VALUE;
         }
       else
         {
-          *used = (at - data);
+          *p_at = at;
           validator->error_code = JSON_VALIDATOR_ERROR_EXPECTED_HEX_DIGIT;
           return SCAN_ERROR;
         }
@@ -649,12 +1046,12 @@ scan_flat_value (JSON_Validator *validator,
         }
       else if (at == end)
         {
-          *used = len;
+          *p_at = at;
           return SCAN_IN_VALUE;
         }
       else
         {
-          *used = (at - data);
+          *p_at = at;
           validator->error_code = JSON_VALIDATOR_ERROR_EXPECTED_HEX_DIGIT;
           return SCAN_ERROR;
         }
@@ -664,7 +1061,7 @@ scan_flat_value (JSON_Validator *validator,
         FLAT_VALUE_GOTO_STATE(GOT_HI_SURROGATE_IN_BACKSLASH_SEQUENCE);
       else
         {
-          *used = (at - data);
+          *p_at = at;
           validator->error_code = JSON_VALIDATOR_ERROR_UTF16_BAD_SURROGATE_PAIR;
           return SCAN_ERROR;
         }
@@ -678,7 +1075,7 @@ scan_flat_value (JSON_Validator *validator,
         }
       else
         {
-          *used = (at - data);
+          *p_at = at;
           validator->error_code = JSON_VALIDATOR_ERROR_UTF16_BAD_SURROGATE_PAIR;
           return SCAN_ERROR;
         }
@@ -699,20 +1096,20 @@ scan_flat_value (JSON_Validator *validator,
             FLAT_VALUE_GOTO_STATE(STRING);
           else
             {
-              *used = (at - data);
+              *p_at = at;
               validator->error_code = JSON_VALIDATOR_ERROR_UTF16_BAD_SURROGATE_PAIR;
               return SCAN_ERROR;
             }
         }
       else if (at < end)
         {
-          *used = (at - data);
+          *p_at = at;
           validator->error_code = JSON_VALIDATOR_ERROR_EXPECTED_HEX_DIGIT;
           return SCAN_ERROR;
         }
       else
         {
-          *used = len;
+          *p_at = at;
           return SCAN_IN_VALUE;
         }
 
@@ -720,7 +1117,7 @@ scan_flat_value (JSON_Validator *validator,
     case FLAT_VALUE_STATE_GOT_BACKSLASH_0:
       if (IS_DIGIT(*at))
         {
-          *used = at - data;
+          *p_at = at;
           validator->error_code = JSON_VALIDATOR_ERROR_DIGIT_NOT_ALLOWED_AFTER_NUL;
           return SCAN_ERROR;
         }
@@ -734,10 +1131,10 @@ scan_flat_value (JSON_Validator *validator,
           FLAT_VALUE_GOTO_STATE(STRING);
 
         case SCAN_IN_VALUE:
-          *used = at - data;
+          *p_at = at;
           return SCAN_IN_VALUE;
         case SCAN_ERROR:
-          *used = at - data;
+          *p_at = at;
           return SCAN_ERROR;
         }
 
@@ -749,10 +1146,11 @@ scan_flat_value (JSON_Validator *validator,
           FLAT_VALUE_GOTO_STATE(STRING);
 
         case SCAN_IN_VALUE:
-          *used = at - data;
+          *p_at = at;
           return SCAN_IN_VALUE;
+
         case SCAN_ERROR:
-          *used = at - data;
+          *p_at = at;
           return SCAN_ERROR;
         }
 
@@ -776,7 +1174,7 @@ scan_flat_value (JSON_Validator *validator,
       else
         {
           validator->error_code = JSON_VALIDATOR_ERROR_BAD_NUMBER;
-          *used = at - data;
+          *p_at = at;
           return SCAN_ERROR;
         }
 
@@ -805,13 +1203,13 @@ scan_flat_value (JSON_Validator *validator,
       else if (IS_ALNUM(*at) && *at == '_')
         {
           validator->error_code = JSON_VALIDATOR_ERROR_BAD_NUMBER;
-          *used = at - data;
+          *p_at = at;
           return SCAN_ERROR;
         }
       else
         {
           // simply 0
-          *used = at - data;
+          *p_at = at;
           return SCAN_END;
         }
     
@@ -821,7 +1219,7 @@ scan_flat_value (JSON_Validator *validator,
           at++;
         if (at == end)
           {
-            *used = len;
+            *p_at = at;
             return SCAN_IN_VALUE;
           }
         if (*at == 'e' || *at == 'E')
@@ -836,7 +1234,7 @@ scan_flat_value (JSON_Validator *validator,
           }
         else
           {
-            *used = at - data;
+            *p_at = at;
             return SCAN_END;
           }
 
@@ -846,17 +1244,17 @@ scan_flat_value (JSON_Validator *validator,
         at++;
       if (at == end)
         {
-          *used = len;
+          *p_at = at;
           return SCAN_IN_VALUE;
         }
       else if (is_number_end_char (*at))
         {
-          *used = at - end;
+          *p_at = at;
           return SCAN_END;
         }
       else
         {
-          *used = at - end;
+          *p_at = at;
           validator->error_code = JSON_VALIDATOR_ERROR_BAD_NUMBER;
           return SCAN_ERROR;
         }
@@ -875,7 +1273,7 @@ scan_flat_value (JSON_Validator *validator,
     case FLAT_VALUE_STATE_IN_HEX:
       while (at < end && IS_HEX_DIGIT(*at))
         at++;
-      *used = at - data;
+      *p_at = at;
       return SCAN_END;
 
     case_GOT_E:
@@ -909,12 +1307,12 @@ scan_flat_value (JSON_Validator *validator,
         }
       if (at == end)
         {
-          *used = at - data;
+          *p_at = at;
           return SCAN_IN_VALUE;
         }
       if (is_number_end_char (*at))
         {
-          *used = at - data;
+          *p_at = at;
           return SCAN_END;
         }
       else
@@ -929,7 +1327,7 @@ scan_flat_value (JSON_Validator *validator,
       if (!IS_DIGIT (*at))
         {
           validator->error_code = JSON_VALIDATOR_ERROR_BAD_NUMBER;
-          *used = at - data;
+          *p_at = at;
           return SCAN_ERROR;
         }
       at++;
@@ -941,7 +1339,7 @@ scan_flat_value (JSON_Validator *validator,
         at++;
       if (at == end)
         {
-          *used = at - data;
+          *p_at = at;
           return SCAN_IN_VALUE;
         }
       if (*at == 'e' || *at == 'E')
@@ -951,24 +1349,27 @@ scan_flat_value (JSON_Validator *validator,
         }
       if (!is_number_end_char(*at))
         {
-          *used = at - data;
+          *p_at = at;
           validator->error_code = JSON_VALIDATOR_ERROR_BAD_NUMBER;
           return SCAN_ERROR;
         }
-      *used = at - data;
+      *p_at = at;
       return SCAN_END;
 
     //case_IN_NULL:
     case FLAT_VALUE_STATE_IN_NULL:
-      return generic_bareword_handler (validator, data, at, end, used, "null", 4);
+      *p_at = at;
+      return generic_bareword_handler (validator, p_at, end, "null", 4);
 
     //case_IN_TRUE:
     case FLAT_VALUE_STATE_IN_TRUE:
-      return generic_bareword_handler (validator, data, at, end, used, "true", 4);
+      *p_at = at;
+      return generic_bareword_handler (validator, p_at, end, "true", 4);
 
     //case_IN_FALSE:
     case FLAT_VALUE_STATE_IN_FALSE:
-      return generic_bareword_handler (validator, data, at, end, used, "false", 5);
+      *p_at = at;
+      return generic_bareword_handler (validator, p_at, end, "false", 5);
     }
 
 #undef FLAT_VALUE_GOTO_STATE
@@ -1046,7 +1447,7 @@ json_validator_feed (JSON_Validator *validator,
           case JSON_VALIDATOR_ENCAPSULATION_COMMA_SEP:                \
             SET_STATE(INTERIM_EXPECTING_COMMA);                       \
           case JSON_VALIDATOR_ENCAPSULATION_SINGLE_OBJECT:            \
-            SET_STATE(EXPECTING_EOF);                                 \
+            SET_STATE(INTERIM_EXPECTING_EOF);                         \
           }                                                           \
         assert(0);                                                    \
         RETURN_ERROR(INTERNAL);                                       \
@@ -1057,12 +1458,29 @@ json_validator_feed (JSON_Validator *validator,
       SET_STATE(IN_ARRAY);                                            \
   }while(0)
 
+
 // Define a label and a c-level case,
 // we use the label when we are midstring for efficiency,
 // and the case-statement if we run out of data.
 #define CASE(shortname) \
         case_##shortname: \
         case JSON_VALIDATOR_STATE_##shortname
+
+  if (validator->whitespace_state != WHITESPACE_STATE_DEFAULT)
+    {
+      switch (validator->whitespace_scanner (validator, &at, end))
+        {
+        case SCAN_END:
+          break;
+        case SCAN_ERROR:
+          RETURN_ERROR_CODE();
+        case SCAN_IN_VALUE:
+          *used = at - data;
+          return state_is_interim (validator->state)
+               ? JSON_VALIDATOR_RESULT_INTERIM
+               : JSON_VALIDATOR_RESULT_IN_RECORD;
+        }
+    }
 
   while (at < end)
     {
@@ -1095,16 +1513,16 @@ json_validator_feed (JSON_Validator *validator,
                 if (validator->options.permit_trailing_commas)
                   {
                     at++;
-                    goto case_INTERIM_GOT_COMMA;
+                    SET_STATE(INTERIM_GOT_COMMA);
                   }
               }
-            else if (is_flat_value_char (validator, *at))
+            if (is_flat_value_char (validator, *at))
               {
                 if (!validator->options.permit_bare_values)
                   RETURN_ERROR(EXPECTED_STRUCTURED_VALUE);
                 validator->flat_value_state = initial_flat_value_state (*at);
                 at++;
-                SET_STATE(IN_FLAT_VALUE);
+                SET_STATE(INTERIM_VALUE);
               }
             else
               {
@@ -1128,6 +1546,60 @@ json_validator_feed (JSON_Validator *validator,
                 RETURN_ERROR(UNEXPECTED_CHAR);
               }
 
+          CASE(INTERIM_GOT_COMMA):
+            switch (validator->whitespace_scanner (validator, &at, end))
+              {
+                case SCAN_END:
+                  break;
+
+                case SCAN_ERROR:
+                  return JSON_VALIDATOR_RESULT_ERROR;
+
+                case SCAN_IN_VALUE:
+                  SET_STATE(INTERIM_VALUE);
+              }
+            if (*at == ',' && validator->options.ignore_multiple_commas)
+              {
+                at++;
+                SET_STATE(INTERIM_GOT_COMMA);
+              }
+            if (*at == '['
+              && validator->options.encapsulation == JSON_VALIDATOR_ENCAPSULATION_ARRAY)
+              {
+                at++;
+                SET_STATE(INTERIM_IN_ARRAY_INITIAL);
+              }
+            if (*at == '{')
+              {
+                if (validator->options.encapsulation == JSON_VALIDATOR_ENCAPSULATION_ARRAY)
+                  RETURN_ERROR(EXPECTED_ARRAY_START);
+
+                // push object marker onto stack
+                PUSH_OBJECT();
+                SET_STATE(IN_OBJECT);
+              }
+            if (*at == ',')
+              {
+                if (validator->options.permit_trailing_commas)
+                  {
+                    at++;
+                    SET_STATE(INTERIM_GOT_COMMA);
+                  }
+              }
+            if (is_flat_value_char (validator, *at))
+              {
+                if (!validator->options.permit_bare_values)
+                  RETURN_ERROR(EXPECTED_STRUCTURED_VALUE);
+                validator->flat_value_state = initial_flat_value_state (*at);
+                at++;
+                SET_STATE(INTERIM_VALUE);
+              }
+            else
+              {
+                RETURN_ERROR(EXPECTED_ARRAY_START);
+              }
+            break;
+
             
           CASE(INTERIM_IN_ARRAY_INITIAL):
             if (*at == '[')
@@ -1138,13 +1610,13 @@ json_validator_feed (JSON_Validator *validator,
             else if (*at == ']')
               {
                 at++;
-                SET_STATE (EXPECTING_EOF);
+                SET_STATE (INTERIM_EXPECTING_EOF);
               }
             else if (*at == '{')
               {
                 PUSH_OBJECT();
                 at++;
-                SET_STATE (IN_OBJECT_INITIAL);
+                SET_STATE (IN_OBJECT);
               }
             else if (is_flat_value_char (validator, *at))
               {
@@ -1185,7 +1657,7 @@ json_validator_feed (JSON_Validator *validator,
                 PUSH_OBJECT();
                 SET_STATE (IN_OBJECT);
               }
-            else if (!validator->options.permit_multiple_commas)
+            else if (!validator->options.ignore_multiple_commas)
               RETURN_ERROR(UNEXPECTED_CHAR);
             else
               RETURN_ERROR(UNEXPECTED_CHAR);
@@ -1195,7 +1667,7 @@ json_validator_feed (JSON_Validator *validator,
           CASE(INTERIM_IN_ARRAY_VALUE):
             {
             size_t fv_used = 0;
-            switch (scan_flat_value (validator, end-at, at, &fv_used))
+            switch (scan_flat_value (validator, &at, end))
               {
               case SCAN_END:
                 at += fv_used;
@@ -1213,7 +1685,21 @@ json_validator_feed (JSON_Validator *validator,
             }
 
           CASE(INTERIM_IN_ARRAY_EXPECTING_COMMA):
-            SKIP_WS();
+            switch (validator->whitespace_scanner (validator, &at, end))
+              {
+              case SCAN_END:
+                if (at == end)
+                  {
+                    *used = len;
+                    return JSON_VALIDATOR_RESULT_INTERIM;
+                  }
+                break;
+              case SCAN_IN_VALUE:
+                *used = len;
+                return JSON_VALIDATOR_RESULT_INTERIM;
+              case SCAN_ERROR:
+                RETURN_ERROR_CODE();
+              }
             if (*at == ',')
               {
                 at++;
@@ -1222,20 +1708,79 @@ json_validator_feed (JSON_Validator *validator,
             else if (*at == ']')
               {
                 at++;
-                SET_STATE(EXPECTING_EOF);
+                SET_STATE(INTERIM_EXPECTING_EOF);
               }
             else
               {
-                ...
+                RETURN_ERROR(UNEXPECTED_CHAR);
               }
             break;
 
+          CASE(INTERIM_VALUE):
+            switch (scan_flat_value (validator, &at, end))
+              {
+              case SCAN_END:
+                SET_STATE(INTERIM_EXPECTING_COMMA);
+
+              case SCAN_ERROR:
+                RETURN_ERROR_CODE();
+
+              case SCAN_IN_VALUE:
+                *used = at - data;
+                return JSON_VALIDATOR_RESULT_IN_RECORD;
+              }
+
+          CASE(INTERIM_EXPECTING_EOL):
+            // UGH not handling high utf8 characters
+            // TODO: scan whitespace, then scan ws for newline
+            while (at < end && IS_SPACE (*at))
+              {
+                if (*at == '\n')
+                  {
+                    *used = at + 1 - data;
+                    return JSON_VALIDATOR_RESULT_INTERIM;
+                  }
+                at++;
+              }
+
+          CASE(INTERIM_EXPECTING_EOF):
+            switch (validator->whitespace_scanner (validator, &at, end))
+              {
+              case SCAN_IN_VALUE:
+              case SCAN_END:
+                *used = at - data;
+                return JSON_VALIDATOR_RESULT_INTERIM;
+              case SCAN_ERROR:
+                RETURN_ERROR_CODE();
+              }
+            while (at < end && IS_SPACE (*at))
+              {
+                if (*at == '\n')
+                  {
+                    *used = at + 1 - data;
+                    return JSON_VALIDATOR_RESULT_INTERIM;
+                  }
+                at++;
+              }
+
           CASE(IN_OBJECT):
-            SKIP_WS();
+            switch (validator->whitespace_scanner (validator, &at, end))
+              {
+              case SCAN_IN_VALUE:
+                *used = len;
+                return JSON_VALIDATOR_RESULT_IN_RECORD;
+
+              case SCAN_ERROR:
+                *used = at - data;
+                return JSON_VALIDATOR_RESULT_ERROR;
+
+              case SCAN_END:
+                break;
+              }
             if (*at == '"')
               {
                 at++;
-                validator->string_state = VALIDATOR_STRING_STATE_NORMAL;
+                validator->flat_value_state = FLAT_VALUE_STATE_STRING;
                 SET_STATE (IN_OBJECT_FIELDNAME);
               }
             else if (validator->options.permit_bare_fieldnames
@@ -1244,9 +1789,18 @@ json_validator_feed (JSON_Validator *validator,
                 at++;
                 SET_STATE (IN_OBJECT_BARE_FIELDNAME);
               }
+            else if (*at == '}')
+              {
+                at++;
+                POP();
+              }
+            else
+              {
+                RETURN_ERROR(UNEXPECTED_CHAR);
+              }
 
           CASE(IN_OBJECT_FIELDNAME):
-            switch (scan_value (validator, &at, end))
+            switch (scan_flat_value (validator, &at, end))
               {
               case SCAN_END:
                 SET_STATE(IN_OBJECT_AWAITING_COLON);
@@ -1310,9 +1864,9 @@ json_validator_feed (JSON_Validator *validator,
                 at++;
                 SET_STATE(IN_ARRAY);
               }
-            else if (is_flat_value_char (*at))
+            else if (is_flat_value_char (validator, *at))
               {
-                validator->value_state = flat_value_char_value_state (*at);
+                validator->flat_value_state = initial_flat_value_state (*at);
                 at++;
                 SET_STATE(IN_OBJECT_VALUE);
               }
@@ -1323,8 +1877,7 @@ json_validator_feed (JSON_Validator *validator,
 
             // this state is only used for non-structured values; otherwise, we use the stack
           CASE(IN_OBJECT_VALUE):
-            ...
-            switch (scan_value (validator, &at, end))
+            switch (scan_flat_value (validator, &at, end))
               {
               case SCAN_END:
                 SET_STATE(IN_OBJECT_AWAITING_COLON);
@@ -1340,12 +1893,13 @@ json_validator_feed (JSON_Validator *validator,
           CASE(IN_ARRAY):
             if (*at == '{')
               {
+                at++;
                 PUSH_OBJECT();
                 SET_STATE(IN_OBJECT);
               }
             else if (*at == '[')
               {
-                ...
+                at++;
                 PUSH_ARRAY();
                 SET_STATE(IN_ARRAY);
               }
@@ -1355,9 +1909,9 @@ json_validator_feed (JSON_Validator *validator,
               }
             else if (*at == ',' && validator->options.permit_trailing_commas)
               SET_STATE(IN_ARRAY_GOT_COMMA);
-            else if (is_flat_value_char (*at))
+            else if (is_flat_value_char (validator, *at))
               {
-                validator->value_state = flat_value_char_value_state (*at);
+                validator->flat_value_state = initial_flat_value_state (*at);
                 at++;
                 SET_STATE(IN_ARRAY_VALUE);
               }
@@ -1368,16 +1922,86 @@ json_validator_feed (JSON_Validator *validator,
             break;
 
           CASE(IN_ARRAY_VALUE):
-            ...
+            switch (scan_flat_value (validator, &at, end))
+              {
+              case SCAN_ERROR:
+                RETURN_ERROR_CODE();
+              case SCAN_END:
+                SET_STATE(IN_ARRAY_EXPECTING_COMMA);
+              case SCAN_IN_VALUE:
+                *used = at - data;
+                return JSON_VALIDATOR_RESULT_IN_RECORD;
+              }
+
+          CASE(IN_ARRAY_EXPECTING_COMMA):
+            if (*at == ',')
+              {
+                at++;
+                SET_STATE(IN_ARRAY_GOT_COMMA);
+              }
+            else if (*at == ']')
+              {
+                POP();
+              }
+            else if (validator->options.ignore_missing_commas)
+              {
+                SET_STATE(IN_ARRAY);
+              }
+            else
+              {
+                RETURN_ERROR(UNEXPECTED_CHAR);
+              }
 
           CASE(IN_ARRAY_GOT_COMMA):
-            ...
+            switch (validator->whitespace_scanner (validator, &at, end))
+              {
+              case SCAN_END:
+                break;
+              case SCAN_IN_VALUE:
+                assert(at==end);
+                *used = at - data;
+                return JSON_VALIDATOR_RESULT_IN_RECORD;
+              case SCAN_ERROR:
+                *used = at - data;
+                RETURN_ERROR_CODE();
+              }
+
+            if (*at == ']')
+              {
+                at++;
+                POP();
+              }
+            else if (*at == '{')
+              {
+                at++;
+                PUSH_OBJECT();
+              }
+            else if (*at == '[')
+              {
+                at++;
+                PUSH_ARRAY();
+              }
+            else if (is_flat_value_char (validator, *at))
+              {
+                validator->flat_value_state = initial_flat_value_state (*at);
+                at++;
+                SET_STATE(IN_ARRAY_VALUE);
+              }
+            else if (*at == ',' && validator->options.ignore_missing_commas)
+              {
+                at++;
+                SET_STATE(IN_ARRAY_GOT_COMMA);
+              }
+            else
+              {
+                RETURN_ERROR(UNEXPECTED_CHAR);
+              }
         }
     }
 
 at_end:
   *used = len;
-  return (validator->state <= LAST_INTERIM_VALUE)
+  return state_is_interim(validator->state)
        ? JSON_VALIDATOR_RESULT_INTERIM
        : JSON_VALIDATOR_RESULT_IN_RECORD;
 
@@ -1394,15 +2018,57 @@ at_end:
 #undef CASE
 }
 
-JSON_VALIDATOR_FUNC
+JSON_VALIDATOR_FUNC_DEF
 JSON_ValidatorResult
 json_validator_end_feed (JSON_Validator *validator)
 {
   switch (validator->state)
     {
-    ...
+    case JSON_VALIDATOR_STATE_INTERIM:
+      return JSON_VALIDATOR_RESULT_INTERIM;
+    case JSON_VALIDATOR_STATE_INTERIM_IN_ARRAY_EXPECTING_COMMA:
+    case JSON_VALIDATOR_STATE_INTERIM_IN_ARRAY_INITIAL:
+    case JSON_VALIDATOR_STATE_INTERIM_IN_ARRAY_GOT_COMMA:
+    case JSON_VALIDATOR_STATE_INTERIM_IN_ARRAY_VALUE:
+      validator->error_code = JSON_VALIDATOR_ERROR_CONTAINING_ARRAY_NOT_CLOSED;
+      return JSON_VALIDATOR_RESULT_ERROR;
+    case JSON_VALIDATOR_STATE_INTERIM_EXPECTING_COMMA:
+      return JSON_VALIDATOR_RESULT_INTERIM;
+    case JSON_VALIDATOR_STATE_INTERIM_GOT_COMMA:
+      if (validator->options.permit_trailing_commas)
+        return JSON_VALIDATOR_RESULT_INTERIM;
+      else
+        {
+          validator->error_code = JSON_VALIDATOR_ERROR_TRAILING_COMMA;
+          return JSON_VALIDATOR_RESULT_ERROR;
+        }
+        
+    case JSON_VALIDATOR_STATE_INTERIM_EXPECTING_EOL:
+    case JSON_VALIDATOR_STATE_INTERIM_EXPECTING_EOF:
+      return JSON_VALIDATOR_RESULT_INTERIM;
+
+    case JSON_VALIDATOR_STATE_INTERIM_VALUE:
+      if (flat_value_can_terminate (validator))
+        return JSON_VALIDATOR_RESULT_INTERIM;
+      else
+        {
+          validator->error_code = JSON_VALIDATOR_ERROR_PARTIAL_RECORD;
+          return JSON_VALIDATOR_RESULT_ERROR;
+        }
+
+    case JSON_VALIDATOR_STATE_IN_ARRAY:
+    case JSON_VALIDATOR_STATE_IN_ARRAY_EXPECTING_COMMA:
+    case JSON_VALIDATOR_STATE_IN_ARRAY_GOT_COMMA:
+    case JSON_VALIDATOR_STATE_IN_ARRAY_VALUE:
+    case JSON_VALIDATOR_STATE_IN_OBJECT:
+    case JSON_VALIDATOR_STATE_IN_OBJECT_AWAITING_COLON:
+    case JSON_VALIDATOR_STATE_IN_OBJECT_FIELDNAME:
+    case JSON_VALIDATOR_STATE_IN_OBJECT_BARE_FIELDNAME:
+    case JSON_VALIDATOR_STATE_IN_OBJECT_VALUE:
+    case JSON_VALIDATOR_STATE_IN_OBJECT_VALUE_SPACE:
+      validator->error_code = JSON_VALIDATOR_ERROR_PARTIAL_RECORD;
+      return JSON_VALIDATOR_RESULT_ERROR;
     }
-  ...
 }
 
 

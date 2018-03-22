@@ -38,19 +38,22 @@ struct JSON_Validator_Options {
   unsigned max_stack_depth;
 
   // These flags are chosen so that 0 is the strict/standard JSON interpretation.
-  unsigned ignore_utf8_errors : 1;
-  unsigned ignore_utf16_errors : 1;
-  unsigned ignore_utf8_surrogate_pairs : 1;
+  unsigned ignore_utf8_errors : 1;              // UNIMPL
+  unsigned ignore_utf16_errors : 1;             // UNIMPL
+  unsigned ignore_utf8_surrogate_pairs : 1;     // UNIMPL
   unsigned permit_backslash_x : 1;
   unsigned permit_trailing_commas : 1;
-  unsigned ignore_comments : 1;
-  unsigned permit_multiple_commas : 1;
-  unsigned allow_bare_fieldnames : 1;
+  unsigned ignore_single_line_comments : 1;
+  unsigned ignore_multi_line_comments : 1;
+  unsigned ignore_multiple_commas : 1;
+  unsigned ignore_missing_commas : 1;
+  unsigned permit_bare_fieldnames : 1;
   unsigned permit_single_quote_strings : 1;
   unsigned permit_leading_decimal_point : 1;
   unsigned permit_hex_numbers : 1;
   unsigned permit_octal_numbers : 1;
-  unsigned disallow_extra_whitespace : 1;
+  unsigned disallow_extra_whitespace : 1;       // brutal non-conformant optimization (NOT IMPL)
+  unsigned ignore_unicode_whitespace : 1;
   unsigned permit_line_continuations_in_strings : 1;
 
   // These values describe the encapsulation of the JSON records
@@ -65,8 +68,10 @@ struct JSON_Validator_Options {
   unsigned start_line_number;
 };
 
-#define JSON_VALIDATOR_OPTIONS_INIT ...        /// JSON
-#define JSON_VALIDATOR_OPTIONS_INIT_JSON5 ...  /// JSON5
+extern JSON_Validator_Options json_validator_options_json;
+extern JSON_Validator_Options json_validator_options_json5;
+//#define JSON_VALIDATOR_OPTIONS_INIT ...        /// JSON
+//#define JSON_VALIDATOR_OPTIONS_INIT_JSON5 ...  /// JSON5
 
 typedef enum
 {
@@ -90,10 +95,13 @@ typedef enum
   JSON_VALIDATOR_ERROR_EXPECTED_EOF,
   JSON_VALIDATOR_ERROR_EXPECTED_STRUCTURED_VALUE,
   JSON_VALIDATOR_ERROR_EXTRA_COMMA,
+  JSON_VALIDATOR_ERROR_TRAILING_COMMA,
   JSON_VALIDATOR_ERROR_SINGLE_QUOTED_STRING_NOT_ALLOWED,
   JSON_VALIDATOR_ERROR_STACK_DEPTH_EXCEEDED,
   JSON_VALIDATOR_ERROR_UNEXPECTED_CHAR,
   JSON_VALIDATOR_ERROR_BAD_BAREWORD,
+  JSON_VALIDATOR_ERROR_CONTAINING_ARRAY_NOT_CLOSED,
+  JSON_VALIDATOR_ERROR_PARTIAL_RECORD,          // occurs at unexpected EOF
 
   // errors that can occur while validating a string.
   JSON_VALIDATOR_ERROR_UTF8_OVERLONG,
