@@ -23,7 +23,7 @@ typedef struct {
                             void                   *callback_data);
   void (*destroy)          (PBC_JSON_Parser        *parser,
                             void                   *callback_data);
-} PBC_JSON_ParserFuncs;
+} PBC_ParserCallbacks;
 
 
 typedef struct PBC_JSON_ParserOptions PBC_JSON_ParserOptions;
@@ -39,16 +39,47 @@ struct PBC_JSON_ParserOptions {
 
 
 // === Streaming Record-Reader API ===
-PBC_JSON_Parser *pbc_json_parser_new     (ProtobufCMessageDescriptor  *message_desc,
-                                          PBC_JSON_ParserFuncs        *funcs,
-                                          PBC_JSON_ParserOptions      *options,
-                                          void                        *callback_data);
-bulp_bool        pbc_json_parser_feed    (PBC_JSON_Parser             *parser,
-                                          size_t                       json_data_length,
-                                          const uint8_t               *json_data);
-void             pbc_json_parser_destroy (PBC_JSON_Parser             *parser);
+PBC_Parser *pbc_parser_new_json         (ProtobufCMessageDescriptor  *message_desc,
+                                         PBC_JSON_ParserCallbacks    *callbacks,
+                                         void                        *callback_data);
+PBC_Parser *pbc_parser_new_json5        (ProtobufCMessageDescriptor  *message_desc,
+                                         PBC_JSON_ParserCallbacks    *callbacks,
+                                         void                        *callback_data);
+PBC_Parser *pbc_parser_new_json_variant (ProtobufCMessageDescriptor  *message_desc,
+                                         PBC_JSON_ParserCallbacks    *callbacks,
+                                         void                        *callback_data,
+                                         PBC_JSON_ParserOptions      *options);
+
+PBC_ParseResult   pbc_parser_feed       (PBC_Parser                  *parser,
+                                         size_t                       data_length,
+                                         const uint8_t               *data);
+PBC_EndResult     pbc_parser_end_feed   (PBC_Parser                  *parser,
+                                         size_t                       data_length,
+                                         const uint8_t               *data);
+void              pbc_parser_destroy    (PBC_Parser                  *parser);
 
 
+
+struct PBC_Parser {
+  uint32_t parser_magic;
+  uint32_t parser_type;
+  PBC_ParserCallbacks callbacks;
+  void *callback_data;
+  ProtobufCMessageDescriptor  *message_desc;
+
+  PBC_ParseResult  (*feed)    (PBC_Parser      *parser,
+                               size_t           json_data_length,
+                               const uint8_t   *json_data);
+  PBC_EndResult    (*end_feed)(PBC_Parser      *parser);
+  void             (*destroy) (PBC_Parser      *parser);
+};
+
+PBC_Parser *pbc_parser_create_protected (ProtobufCMessageDescriptor  *message_desc,
+                                         PBC_JSON_ParserCallbacks    *callbacks,
+                                         PBC_JSON_ParserOptions      *options,
+                                         void                        *callback_data);
+
+#if 0
 // === One-Record API ===
 // TL;DR: clear 'pool' after you are done
 // NOTE: the return value ProtobufCMessage may point into json_data.
@@ -60,6 +91,7 @@ ProtobufCMessage* pbc_json_parse         (ProtobufCMessageDescriptor  *message_d
                                           BulpMemPool                 *pool,
                                           PBC_JSON_ParserError       **error_out);
 void              pbc_json_parse_free    (ProtobufCMessage            *msg);
+#endif
 
 
 
