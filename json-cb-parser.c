@@ -87,11 +87,12 @@ typedef enum
   JSON_CALLBACK_PARSER_STATE_IN_ARRAY_GOT_COMMA,
   JSON_CALLBACK_PARSER_STATE_IN_ARRAY_VALUE,   // flat_value_state is valid
   JSON_CALLBACK_PARSER_STATE_IN_OBJECT,
-  JSON_CALLBACK_PARSER_STATE_IN_OBJECT_AWAITING_COLON,
+  JSON_CALLBACK_PARSER_STATE_IN_OBJECT_EXPECTING_COLON,
   JSON_CALLBACK_PARSER_STATE_IN_OBJECT_FIELDNAME,     // flat_value_state is valid
   JSON_CALLBACK_PARSER_STATE_IN_OBJECT_BARE_FIELDNAME,
   JSON_CALLBACK_PARSER_STATE_IN_OBJECT_VALUE, // flat_value_state is valid
   JSON_CALLBACK_PARSER_STATE_IN_OBJECT_VALUE_SPACE,
+  JSON_CALLBACK_PARSER_STATE_IN_OBJECT_EXPECTING_COMMA,
 } JSON_CallbackParserState;
 
 #define state_is_interim(state) ((state) <= JSON_CALLBACK_PARSER_STATE_INTERIM_EXPECTING_EOL)
@@ -326,6 +327,9 @@ error_code_to_string (JSON_CallbackParserError code)
 
     case JSON_CALLBACK_PARSER_ERROR_EXPECTED_STRUCTURED_VALUE:
       return "Expected object or array (aka a Structured Value) at toplevel";
+
+    case JSON_CALLBACK_PARSER_ERROR_EXPECTED_COMMA:
+      return "Expected ','";
 
     case JSON_CALLBACK_PARSER_ERROR_EXTRA_COMMA:
       return "Got multiple commas (','): not allowed";
@@ -1881,13 +1885,15 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
             if (*at == '{')
               {
                 // push object marker onto stack
+                at++;
                 PUSH_OBJECT();
                 GOTO_STATE(IN_OBJECT);
               }
             else if (*at == '[')
               {
                 // push object marker onto stack
-                PUSH_OBJECT();
+                at++;
+                PUSH_ARRAY();
                 GOTO_STATE(IN_ARRAY);
               }
             else if (*at == ',')
@@ -2034,7 +2040,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
             switch (scan_flat_value (parser, &at, end))
               {
               case SCAN_END:
-                GOTO_STATE(IN_OBJECT_AWAITING_COLON);
+                GOTO_STATE(IN_OBJECT_EXPECTING_COLON);
 
               case SCAN_IN_VALUE:
                 assert(at == end);
@@ -2057,7 +2063,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               {
                 do_callback_object_key (parser);
                 at++;
-                GOTO_STATE(IN_OBJECT_AWAITING_COLON);
+                GOTO_STATE(IN_OBJECT_EXPECTING_COLON);
               }
             else if (*at == ':')
               {
@@ -2072,7 +2078,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
             break;
 
-          CASE(IN_OBJECT_AWAITING_COLON):
+          CASE(IN_OBJECT_EXPECTING_COLON):
             while (at < end && IS_SPACE (*at))
               at++;
             if (at == end)
@@ -2118,7 +2124,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
             switch (scan_flat_value (parser, &at, end))
               {
               case SCAN_END:
-                GOTO_STATE(IN_OBJECT_AWAITING_COLON);
+                GOTO_STATE(IN_OBJECT_EXPECTING_COMMA);
 
               case SCAN_IN_VALUE:
                 assert(at == end);
@@ -2127,6 +2133,24 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               case SCAN_ERROR:
                 return false;
               }
+          CASE(IN_OBJECT_EXPECTING_COMMA):
+            while (at < end && IS_SPACE (*at))
+              at++;
+            if (at == end)
+              goto at_end;
+            if (*at == ',')
+              {
+                at++;
+                GOTO_STATE(IN_OBJECT);
+              }
+            else if (!parser->options.ignore_missing_commas)
+              {
+                RETURN_ERROR(EXPECTED_COMMA);
+              }
+            else
+              GOTO_STATE(IN_OBJECT);
+            break;
+
 
           CASE(IN_ARRAY):
             if (*at == '{')
@@ -2313,11 +2337,12 @@ json_callback_parser_end_feed (JSON_CallbackParser *parser)
     case JSON_CALLBACK_PARSER_STATE_IN_ARRAY_GOT_COMMA:
     case JSON_CALLBACK_PARSER_STATE_IN_ARRAY_VALUE:
     case JSON_CALLBACK_PARSER_STATE_IN_OBJECT:
-    case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_AWAITING_COLON:
+    case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_EXPECTING_COLON:
     case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_FIELDNAME:
     case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_BARE_FIELDNAME:
     case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_VALUE:
     case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_VALUE_SPACE:
+    case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_EXPECTING_COMMA:
       parser->error_code = JSON_CALLBACK_PARSER_ERROR_PARTIAL_RECORD;
       return false;
     }

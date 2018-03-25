@@ -24,6 +24,8 @@ typedef struct JSON_CallbackParser JSON_CallbackParser;
 #include <stdint.h>
 #include <stdbool.h>
 
+#define JSON_CALLBACK_PARSER_DEFAULT_MAX_DEPTH 64
+
 struct JSON_CallbackParser_Options {
   unsigned max_stack_depth;
 
@@ -58,8 +60,32 @@ struct JSON_CallbackParser_Options {
 
 extern JSON_CallbackParser_Options json_callback_parser_options_json;
 extern JSON_CallbackParser_Options json_callback_parser_options_json5;
-//#define JSON_CALLBACK_PARSER_OPTIONS_INIT ...        /// JSON
-//#define JSON_CALLBACK_PARSER_OPTIONS_INIT_JSON5 ...  /// JSON5
+#define JSON_CALLBACK_PARSER_OPTIONS_INIT                     \
+(JSON_CallbackParser_Options) {     /*JSON*/                  \
+  .max_stack_depth = JSON_CALLBACK_PARSER_DEFAULT_MAX_DEPTH,  \
+  .ignore_utf8_errors = 0,                                    \
+  .ignore_utf16_errors = 0,                                   \
+  .ignore_utf8_surrogate_pairs = 0,                           \
+  .permit_backslash_x = 0,                                    \
+  .permit_backslash_0 = 0,                                    \
+  .permit_trailing_commas = 0,                                \
+  .ignore_single_line_comments = 0,                           \
+  .ignore_multi_line_comments = 0,                            \
+  .ignore_multiple_commas = 0,                                \
+  .ignore_missing_commas = 0,                                 \
+  .permit_bare_fieldnames = 0,                                \
+  .permit_single_quote_strings = 0,                           \
+  .permit_leading_decimal_point = 0,                          \
+  .permit_hex_numbers = 0,                                    \
+  .permit_octal_numbers = 0,                                  \
+  .disallow_extra_whitespace = 0,                             \
+  .ignore_unicode_whitespace = 0,                             \
+  .permit_line_continuations_in_strings = 0,                  \
+  .permit_bare_values = 0,                                    \
+  .permit_array_values = 0,                                   \
+  .permit_toplevel_commas = 0,                                \
+  .start_line_number = 1,                                     \
+}
 
 typedef enum
 {
@@ -72,6 +98,7 @@ typedef enum
   JSON_CALLBACK_PARSER_ERROR_EXPECTED_COMMA_OR_RBRACE,
   JSON_CALLBACK_PARSER_ERROR_EXPECTED_HEX_DIGIT,
   JSON_CALLBACK_PARSER_ERROR_EXPECTED_STRUCTURED_VALUE,
+  JSON_CALLBACK_PARSER_ERROR_EXPECTED_COMMA,
   JSON_CALLBACK_PARSER_ERROR_EXTRA_COMMA,
   JSON_CALLBACK_PARSER_ERROR_TRAILING_COMMA,
   JSON_CALLBACK_PARSER_ERROR_SINGLE_QUOTED_STRING_NOT_ALLOWED,

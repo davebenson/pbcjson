@@ -191,7 +191,7 @@ run_test (Test *test,
 }
 
 
-int main(int argc, char **argv)
+int main(void)
 {
   JSON_CallbackParser_Options options = JSON_CALLBACK_PARSER_OPTIONS_INIT;
   Test test = {
