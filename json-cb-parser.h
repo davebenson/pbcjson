@@ -1,6 +1,4 @@
-/* This is a callback_parser / scanner that will give find references to the start/end of
- * a record while ensuring that the contents are valid UTF-8,
- * modulo the flags which offers all types of non-conformance.
+/* Sort-of a SAX-type parser for JSON.
  */
 
 #ifndef __JSON_CALLBACK_PARSER_H_
@@ -72,7 +70,6 @@ typedef enum
   JSON_CALLBACK_PARSER_ERROR_EXPECTED_VALUE,
   JSON_CALLBACK_PARSER_ERROR_EXPECTED_COMMA_OR_RBRACKET,
   JSON_CALLBACK_PARSER_ERROR_EXPECTED_COMMA_OR_RBRACE,
-  JSON_CALLBACK_PARSER_ERROR_EXPECTED_ARRAY_START,
   JSON_CALLBACK_PARSER_ERROR_EXPECTED_HEX_DIGIT,
   JSON_CALLBACK_PARSER_ERROR_EXPECTED_STRUCTURED_VALUE,
   JSON_CALLBACK_PARSER_ERROR_EXTRA_COMMA,
@@ -81,14 +78,12 @@ typedef enum
   JSON_CALLBACK_PARSER_ERROR_STACK_DEPTH_EXCEEDED,
   JSON_CALLBACK_PARSER_ERROR_UNEXPECTED_CHAR,
   JSON_CALLBACK_PARSER_ERROR_BAD_BAREWORD,
-  JSON_CALLBACK_PARSER_ERROR_CONTAINING_ARRAY_NOT_CLOSED,
   JSON_CALLBACK_PARSER_ERROR_PARTIAL_RECORD,          // occurs at unexpected EOF
 
   // errors that can occur while validating a string.
   JSON_CALLBACK_PARSER_ERROR_UTF8_OVERLONG,
   JSON_CALLBACK_PARSER_ERROR_UTF8_BAD_INITIAL_BYTE,
   JSON_CALLBACK_PARSER_ERROR_UTF8_BAD_TRAILING_BYTE,
-  JSON_CALLBACK_PARSER_ERROR_UTF8_SURROGATE_PAIR_NOT_ALLOWED,
   JSON_CALLBACK_PARSER_ERROR_UTF16_BAD_SURROGATE_PAIR,
   JSON_CALLBACK_PARSER_ERROR_STRING_CONTROL_CHARACTER,
   JSON_CALLBACK_PARSER_ERROR_QUOTED_NEWLINE,
@@ -134,7 +129,7 @@ struct JSON_Callbacks {
                          const char *number,
                          void *callback_data);
   bool (*boolean_value) (int boolean_value,
-                         void *callback_data);
+                       void *callback_data);
   bool (*null_value)    (void *callback_data);
 
   bool (*error)         (const JSON_CallbackParser_ErrorInfo *error,
@@ -142,7 +137,20 @@ struct JSON_Callbacks {
 
   void (*destroy)       (void *callback_data);
 };
-
+#define JSON_CALLBACKS_DEF(prefix, suffix) \
+  {                                        \
+    prefix ## start_object ## suffix,      \
+    prefix ## end_object   ## suffix,      \
+    prefix ## start_array  ## suffix,      \
+    prefix ## end_array    ## suffix,      \
+    prefix ## object_key   ## suffix,      \
+    prefix ## number_value ## suffix,      \
+    prefix ## string_value ## suffix,      \
+    prefix ## boolean_value## suffix,      \
+    prefix ## null_value   ## suffix,      \
+    prefix ## error        ## suffix,      \
+    prefix ## destroy      ## suffix       \
+  }
 // note thtat JSON_CallbackParser allocates no further memory, so there
 JSON_CALLBACK_PARSER_FUNC_DECL
 JSON_CallbackParser *

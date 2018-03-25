@@ -3,6 +3,60 @@
 #include <stdlib.h>
 #include <string.h>
 
+static const char byte_name_str[] =
+"NUL\0" "^A\0" "^B\0" "^C\0" "^D\0" "^E\0" "^F\0" "^G\0" "^H\0" "TAB\0"   /* 0 .. 9 */
+"NEWLINE\0" "^K\0" "^L\0" "CARRIAGE-RETURN\0" "^N\0" "^O\0" "^P\0" "^Q\0" "^R\0" "^S\0"   /* 10 .. 19 */
+"^T\0" "^U\0" "^V\0" "^W\0" "^X\0" "^Y\0" "^Z\0" "0x1b\0" "0x1c\0" "0x1d\0"   /* 20 .. 29 */
+"0x1e\0" "0x1f\0" "SPACE\0" "'!'\0" "'\"'\0" "'#'\0" "'$'\0" "'%'\0" "'&'\0" "'\\''\0"   /* 30 .. 39 */
+"'('\0" "')'\0" "'*'\0" "'+'\0" "','\0" "'-'\0" "'.'\0" "'/'\0" "'0'\0" "'1'\0"   /* 40 .. 49 */
+"'2'\0" "'3'\0" "'4'\0" "'5'\0" "'6'\0" "'7'\0" "'8'\0" "'9'\0" "':'\0" "';'\0"   /* 50 .. 59 */
+"'<'\0" "'='\0" "'>'\0" "'?'\0" "'@'\0" "'A'\0" "'B'\0" "'C'\0" "'D'\0" "'E'\0"   /* 60 .. 69 */
+"'F'\0" "'G'\0" "'H'\0" "'I'\0" "'J'\0" "'K'\0" "'L'\0" "'M'\0" "'N'\0" "'O'\0"   /* 70 .. 79 */
+"'P'\0" "'Q'\0" "'R'\0" "'S'\0" "'T'\0" "'U'\0" "'V'\0" "'W'\0" "'X'\0" "'Y'\0"   /* 80 .. 89 */
+"'Z'\0" "'['\0" "'\\'\0" "']'\0" "'^'\0" "'_'\0" "'`'\0" "'a'\0" "'b'\0" "'c'\0"   /* 90 .. 99 */
+"'d'\0" "'e'\0" "'f'\0" "'g'\0" "'h'\0" "'i'\0" "'j'\0" "'k'\0" "'l'\0" "'m'\0"   /* 100 .. 109 */
+"'n'\0" "'o'\0" "'p'\0" "'q'\0" "'r'\0" "'s'\0" "'t'\0" "'u'\0" "'v'\0" "'w'\0"   /* 110 .. 119 */
+"'x'\0" "'y'\0" "'z'\0" "'{'\0" "'|'\0" "'}'\0" "'~'\0" "DEL\0" "0x80\0" "0x81\0"   /* 120 .. 129 */
+"0x82\0" "0x83\0" "0x84\0" "0x85\0" "0x86\0" "0x87\0" "0x88\0" "0x89\0" "0x8a\0" "0x8b\0"   /* 130 .. 139 */
+"0x8c\0" "0x8d\0" "0x8e\0" "0x8f\0" "0x90\0" "0x91\0" "0x92\0" "0x93\0" "0x94\0" "0x95\0"   /* 140 .. 149 */
+"0x96\0" "0x97\0" "0x98\0" "0x99\0" "0x9a\0" "0x9b\0" "0x9c\0" "0x9d\0" "0x9e\0" "0x9f\0"   /* 150 .. 159 */
+"0xa0\0" "0xa1\0" "0xa2\0" "0xa3\0" "0xa4\0" "0xa5\0" "0xa6\0" "0xa7\0" "0xa8\0" "0xa9\0"   /* 160 .. 169 */
+"0xaa\0" "0xab\0" "0xac\0" "0xad\0" "0xae\0" "0xaf\0" "0xb0\0" "0xb1\0" "0xb2\0" "0xb3\0"   /* 170 .. 179 */
+"0xb4\0" "0xb5\0" "0xb6\0" "0xb7\0" "0xb8\0" "0xb9\0" "0xba\0" "0xbb\0" "0xbc\0" "0xbd\0"   /* 180 .. 189 */
+"0xbe\0" "0xbf\0" "0xc0\0" "0xc1\0" "0xc2\0" "0xc3\0" "0xc4\0" "0xc5\0" "0xc6\0" "0xc7\0"   /* 190 .. 199 */
+"0xc8\0" "0xc9\0" "0xca\0" "0xcb\0" "0xcc\0" "0xcd\0" "0xce\0" "0xcf\0" "0xd0\0" "0xd1\0"   /* 200 .. 209 */
+"0xd2\0" "0xd3\0" "0xd4\0" "0xd5\0" "0xd6\0" "0xd7\0" "0xd8\0" "0xd9\0" "0xda\0" "0xdb\0"   /* 210 .. 219 */
+"0xdc\0" "0xdd\0" "0xde\0" "0xdf\0" "0xe0\0" "0xe1\0" "0xe2\0" "0xe3\0" "0xe4\0" "0xe5\0"   /* 220 .. 229 */
+"0xe6\0" "0xe7\0" "0xe8\0" "0xe9\0" "0xea\0" "0xeb\0" "0xec\0" "0xed\0" "0xee\0" "0xef\0"   /* 230 .. 239 */
+"0xf0\0" "0xf1\0" "0xf2\0" "0xf3\0" "0xf4\0" "0xf5\0" "0xf6\0" "0xf7\0" "0xf8\0" "0xf9\0"   /* 240 .. 249 */
+"0xfa\0" "0xfb\0" "0xfc\0" "0xfd\0" "0xfe\0" "0xff\0" ;
+static const unsigned short byte_name_offsets[256] = {
+0,4,7,10,13,16,19,22,25,28,  /* 0.. 9 */
+32,40,43,46,62,65,68,71,74,77,  /* 10.. 19 */
+80,83,86,89,92,95,98,101,106,111,  /* 20.. 29 */
+116,121,126,132,136,140,144,148,152,156,  /* 30.. 39 */
+161,165,169,173,177,181,185,189,193,197,  /* 40.. 49 */
+201,205,209,213,217,221,225,229,233,237,  /* 50.. 59 */
+241,245,249,253,257,261,265,269,273,277,  /* 60.. 69 */
+281,285,289,293,297,301,305,309,313,317,  /* 70.. 79 */
+321,325,329,333,337,341,345,349,353,357,  /* 80.. 89 */
+361,365,369,373,377,381,385,389,393,397,  /* 90.. 99 */
+401,405,409,413,417,421,425,429,433,437,  /* 100.. 109 */
+441,445,449,453,457,461,465,469,473,477,  /* 110.. 119 */
+481,485,489,493,497,501,505,509,513,518,  /* 120.. 129 */
+523,528,533,538,543,548,553,558,563,568,  /* 130.. 139 */
+573,578,583,588,593,598,603,608,613,618,  /* 140.. 149 */
+623,628,633,638,643,648,653,658,663,668,  /* 150.. 159 */
+673,678,683,688,693,698,703,708,713,718,  /* 160.. 169 */
+723,728,733,738,743,748,753,758,763,768,  /* 170.. 179 */
+773,778,783,788,793,798,803,808,813,818,  /* 180.. 189 */
+823,828,833,838,843,848,853,858,863,868,  /* 190.. 199 */
+873,878,883,888,893,898,903,908,913,918,  /* 200.. 209 */
+923,928,933,938,943,948,953,958,963,968,  /* 210.. 219 */
+973,978,983,988,993,998,1003,1008,1013,1018,  /* 220.. 229 */
+1023,1028,1033,1038,1043,1048,1053,1058,1063,1068,  /* 230.. 239 */
+1073,1078,1083,1088,1093,1098,1103,1108,1113,1118,  /* 240.. 249 */
+1123,1128,1133,1138,1143,1148,};
 
 #define IS_SPACE(c)  ((c)=='\t' || (c)=='\r' || (c)==' ' || (c)=='\n')
 #define IS_HEX_DIGIT(c)     (('0' <= (c) && (c) <= '9')                 \
@@ -168,6 +222,7 @@ struct JSON_CallbackParser {
 
   JSON_CallbackParserState state;
   JSON_CallbackParserError error_code;
+  uint8_t error_byte;
 
   // this is for strings and numbers; we also use it for quoted object field names.
   FlatValueState flat_value_state;
@@ -297,23 +352,46 @@ error_code_to_string (JSON_CallbackParserError code)
       return "Invalid UTF-8 data (overlong)";
 
     case JSON_CALLBACK_PARSER_ERROR_UTF8_BAD_INITIAL_BYTE:
-    case JSON_CALLBACK_PARSER_ERROR_UTF8_BAD_TRAILING_BYTE:
-    case JSON_CALLBACK_PARSER_ERROR_UTF8_SURROGATE_PAIR_NOT_ALLOWED:
-    case JSON_CALLBACK_PARSER_ERROR_UTF16_BAD_SURROGATE_PAIR:
-    case JSON_CALLBACK_PARSER_ERROR_STRING_CONTROL_CHARACTER:
-    case JSON_CALLBACK_PARSER_ERROR_QUOTED_NEWLINE:
-    case JSON_CALLBACK_PARSER_ERROR_DIGIT_NOT_ALLOWED_AFTER_NUL:
-    case JSON_CALLBACK_PARSER_ERROR_BACKSLASH_X_NOT_ALLOWED:
+      return "Bad initial UTF-8 byte";
 
-  // errors that can occur while validating a number
+    case JSON_CALLBACK_PARSER_ERROR_UTF8_BAD_TRAILING_BYTE:
+      return "Bad non-initial UTF-8 byte";
+
+    case JSON_CALLBACK_PARSER_ERROR_UTF16_BAD_SURROGATE_PAIR:
+      return "Bad UTF-16 Surrogate pair sequence";
+
+    case JSON_CALLBACK_PARSER_ERROR_STRING_CONTROL_CHARACTER:
+      return "String contained raw control character";
+
+    case JSON_CALLBACK_PARSER_ERROR_QUOTED_NEWLINE:
+      return "Quoted newline not allowed";
+
+    case JSON_CALLBACK_PARSER_ERROR_DIGIT_NOT_ALLOWED_AFTER_NUL:
+      return "Digit not allowed after \\0";
+
+    case JSON_CALLBACK_PARSER_ERROR_BACKSLASH_X_NOT_ALLOWED:
+      return "Unicode \\x not allowed";
+
     case JSON_CALLBACK_PARSER_ERROR_HEX_NOT_ALLOWED:
+      return "Hexidecimal number not allowed";
+
     case JSON_CALLBACK_PARSER_ERROR_OCTAL_NOT_ALLOWED:
+      return "Octal number not allowed";
+
     case JSON_CALLBACK_PARSER_ERROR_NON_OCTAL_DIGIT:
+      return "Non-octal digit encountered";
+
     case JSON_CALLBACK_PARSER_ERROR_LEADING_DECIMAL_POINT_NOT_ALLOWED:
+      return "Leading decimal point ('.') not allowed";
+
     case JSON_CALLBACK_PARSER_ERROR_TRAILING_DECIMAL_POINT_NOT_ALLOWED:
+      return "Trailing decimal point ('.') not allowed";
+
     case JSON_CALLBACK_PARSER_ERROR_BAD_NUMBER:
+      return "Invalid number";
 
     case JSON_CALLBACK_PARSER_ERROR_INTERNAL:
+      return "JSON Callback Parser Internal error";
 
     }
   return "Invalid JSON Parser Error Code";
@@ -385,14 +463,12 @@ do_callback_error       (JSON_CallbackParser *parser)
   switch (parser->error_code)
     {
     case JSON_CALLBACK_PARSER_ERROR_UNEXPECTED_CHAR:
-      error_info.message2 = byte_names[byte_name_index[parser->error_char]];
+      error_info.message2 = byte_name_str + byte_name_offsets[parser->error_byte];
       break;
     default:
       error_info.message2 = NULL;
       break;
     }
-  const char *message;
-  const char *message2;         /// may be NULL
   return parser->callbacks.error (&error_info, parser->callback_data);
 }
 
@@ -466,7 +542,7 @@ do {                                                          \
       else
         {
           *p_at = at;
-          parser->error_char = *at;
+          parser->error_byte = *at;
           parser->error_code = JSON_CALLBACK_PARSER_ERROR_UNEXPECTED_CHAR;
           return SCAN_ERROR;
         }
@@ -576,7 +652,7 @@ do {                                                          \
 
 
 nonws_nonascii:
-  parser->error_char = *at;
+  parser->error_byte = *at;
   parser->error_code = JSON_CALLBACK_PARSER_ERROR_UNEXPECTED_CHAR;
   return SCAN_ERROR;
 }
@@ -639,7 +715,7 @@ do {                                                          \
       else
         {
           *p_at = at;
-          parser->error_char = *at;
+          parser->error_byte = *at;
           parser->error_code = JSON_CALLBACK_PARSER_ERROR_UNEXPECTED_CHAR;
           return SCAN_ERROR;
         }
@@ -749,7 +825,7 @@ do {                                                          \
 
 
 nonws_nonascii:
-  parser->error_char = *at;
+  parser->error_byte = *at;
   parser->error_code = JSON_CALLBACK_PARSER_ERROR_UNEXPECTED_CHAR;
   return SCAN_ERROR;
 }
@@ -1714,18 +1790,14 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
 
 #define SKIP_WS()   SKIP_CHAR_TYPE(IS_SPACE)
 
-#define RETURN_ERROR_CODE()                                                \
-  do{                                                                      \
-    return JSON_CALLBACK_PARSER_RESULT_ERROR;                                    \
-  }while(0)
-
-#define RETURN_ERROR(error_code_shortname)                                 \
-  do{                                                                      \
+#define RETURN_ERROR(error_code_shortname)                            \
+  do{                                                                 \
     parser->error_code = JSON_CALLBACK_PARSER_ERROR_ ## error_code_shortname; \
+    do_callback_error (parser);                                       \
     return false;                                                     \
   }while(0)
 
-#define GOTO_STATE(state_shortname)                                    \
+#define GOTO_STATE(state_shortname)                                   \
   do{                                                                 \
     parser->state = JSON_CALLBACK_PARSER_STATE_ ## state_shortname;   \
     if (at == end)                                                    \
@@ -1836,7 +1908,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
             else
               {
-                parser->error_char = *at;
+                parser->error_byte = *at;
                 RETURN_ERROR(UNEXPECTED_CHAR);
               }
             break;
@@ -1903,7 +1975,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
             else
               {
-                parser->error_char = *at;
+                parser->error_byte = *at;
                 RETURN_ERROR(UNEXPECTED_CHAR);
               }
             break;
@@ -1954,7 +2026,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
             else
               {
-                parser->error_char = *at;
+                parser->error_byte = *at;
                 RETURN_ERROR(UNEXPECTED_CHAR);
               }
 
@@ -1995,7 +2067,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
             else
               {
-                parser->error_char = *at;
+                parser->error_byte = *at;
                 RETURN_ERROR(UNEXPECTED_CHAR);
               }
             break;
@@ -2037,7 +2109,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
             else
               {
-                parser->error_char = *at;
+                parser->error_byte = *at;
                 RETURN_ERROR(UNEXPECTED_CHAR);
               }
 
@@ -2083,7 +2155,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
             else 
               {
-                parser->error_char = *at;
+                parser->error_byte = *at;
                 RETURN_ERROR(UNEXPECTED_CHAR);
               }
             break;
@@ -2117,7 +2189,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
             else
               {
-                parser->error_char = *at;
+                parser->error_byte = *at;
                 RETURN_ERROR(UNEXPECTED_CHAR);
               }
 
@@ -2161,7 +2233,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
             else
               {
-                parser->error_char = *at;
+                parser->error_byte = *at;
                 RETURN_ERROR(UNEXPECTED_CHAR);
               }
         }
