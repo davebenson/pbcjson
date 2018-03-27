@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 static const char byte_name_str[] =
 "NUL\0" "^A\0" "^B\0" "^C\0" "^D\0" "^E\0" "^F\0" "^G\0" "^H\0" "TAB\0"   /* 0 .. 9 */
@@ -90,8 +91,8 @@ typedef enum
   JSON_CALLBACK_PARSER_STATE_IN_OBJECT_EXPECTING_COLON,
   JSON_CALLBACK_PARSER_STATE_IN_OBJECT_FIELDNAME,     // flat_value_state is valid
   JSON_CALLBACK_PARSER_STATE_IN_OBJECT_BARE_FIELDNAME,
+  JSON_CALLBACK_PARSER_STATE_IN_OBJECT_GOT_COLON,
   JSON_CALLBACK_PARSER_STATE_IN_OBJECT_VALUE, // flat_value_state is valid
-  JSON_CALLBACK_PARSER_STATE_IN_OBJECT_VALUE_SPACE,
   JSON_CALLBACK_PARSER_STATE_IN_OBJECT_EXPECTING_COMMA,
 } JSON_CallbackParserState;
 
@@ -195,10 +196,6 @@ typedef ScanResult (*WhitespaceScannerFunc) (JSON_CallbackParser *parser,
                                              const uint8_t  *end);
 
 
-#define FLAT_VALUE_STATE_MASK              0x3f
-#define FLAT_VALUE_STATE_MASKED(st)        ((st) & FLAT_VALUE_STATE_MASK)
-#define FLAT_VALUE_STATE_SINGLE_QUOTED     0x40
-
 #define FLAT_VALUE_STATE_REPLACE_ENUM_BITS(in, enum_value) \
   do{                                                      \
     in &= ~FLAT_VALUE_STATE_MASK;                          \
@@ -227,6 +224,7 @@ struct JSON_CallbackParser {
 
   // this is for strings and numbers; we also use it for quoted object field names.
   FlatValueState flat_value_state;
+  char quote_char;
 
   WhitespaceScannerFunc whitespace_scanner;
   WhitespaceState whitespace_state;
@@ -258,6 +256,12 @@ buffer_set    (JSON_CallbackParser *parser,
     }
   memcpy (parser->buffer, data, len);
   parser->buffer_length = len;
+}
+
+static inline void
+buffer_empty    (JSON_CallbackParser *parser)
+{
+  parser->buffer_length = 0;
 }
 
 static inline void
@@ -857,6 +861,9 @@ json_callback_parser_new (const JSON_Callbacks *callbacks,
   parser->error_code = JSON_CALLBACK_PARSER_ERROR_NONE;
   parser->callbacks = *callbacks;
   parser->callback_data = callback_data;
+  parser->buffer_alloced = 64;
+  parser->buffer_length = 0;
+  parser->buffer = malloc (parser->buffer_alloced);
 
   // select optimized whitespace scanner
   if (!options->ignore_single_line_comments
@@ -1100,6 +1107,7 @@ is_number_end_char (char c)
   return IS_SPACE(c) || c == ',' || c == '}' || c == ']';
 }
 
+#if 0
 static inline int
 is_flat_value_char (JSON_CallbackParser *parser,
                     char            c)
@@ -1108,26 +1116,68 @@ is_flat_value_char (JSON_CallbackParser *parser,
   if ('0' <= c && c <= '9') return 1;
   if (c == '\'' && parser->options.permit_single_quote_strings) return 1;
   if (c == '.' && parser->options.permit_leading_decimal_point) return 1;
+  if (c == 't' || c == 'f' || c == 'n') return 1;
   return 0;
 }
+#endif
 
-static inline FlatValueState
-initial_flat_value_state (char            c)
+static inline bool
+maybe_setup_flat_value_state (JSON_CallbackParser *parser, uint8_t c)
 {
-  if (c == '"') return FLAT_VALUE_STATE_STRING;
-  if ('1' <= c && c <= '9') return FLAT_VALUE_STATE_IN_DIGITS;
-  if (c == '0') return FLAT_VALUE_STATE_GOT_0;
-  if (c == '+' || c == '-') return FLAT_VALUE_STATE_GOT_SIGN;
-  if (c == '\'') return FLAT_VALUE_STATE_STRING | FLAT_VALUE_STATE_SINGLE_QUOTED;
-  if (c == '.') return FLAT_VALUE_STATE_GOT_LEADING_DECIMAL_POINT;
-  assert(0);
-  return 0;
-}
+  switch (c)
+    {
+    case '\'':
+      if (!parser->options.permit_single_quote_strings)
+        return false;
+      /* fall-through */
 
-static inline char
-flat_value_state_to_end_quote_char (FlatValueState state)
-{
-  return (state & FLAT_VALUE_STATE_SINGLE_QUOTED) ? '\'' : '"';
+    case '"':
+      parser->quote_char = c;
+      parser->flat_value_state = FLAT_VALUE_STATE_STRING;
+      buffer_empty (parser);
+      return true;
+
+    case '1': case '2': case '3':
+    case '4': case '5': case '6':
+    case '7': case '8': case '9':
+      buffer_set (parser, 1, &c);
+      parser->flat_value_state = FLAT_VALUE_STATE_IN_DIGITS;
+      return true;
+
+    case '0':
+      buffer_set (parser, 1, &c);
+      parser->flat_value_state = FLAT_VALUE_STATE_GOT_0;
+      return true;
+
+    case '+': case '-':
+      buffer_set (parser, 1, &c);
+      parser->flat_value_state = FLAT_VALUE_STATE_GOT_SIGN;
+      return true;
+
+    case '.':
+      if (parser->options.permit_leading_decimal_point)
+        {
+          buffer_set (parser, 1, &c);
+          parser->flat_value_state = FLAT_VALUE_STATE_GOT_LEADING_DECIMAL_POINT;
+          return true;
+        }
+      return false;
+
+    case 't':
+      buffer_set (parser, 1, &c);
+      parser->flat_value_state = FLAT_VALUE_STATE_IN_TRUE;
+      return true;
+    case 'f':
+      buffer_set (parser, 1, &c);
+      parser->flat_value_state = FLAT_VALUE_STATE_IN_FALSE;
+      return true;
+    case 'n':
+      buffer_set (parser, 1, &c);
+      parser->flat_value_state = FLAT_VALUE_STATE_IN_NULL;
+      return true;
+    default:
+      return false;
+    }
 }
 
 static ScanResult
@@ -1139,10 +1189,10 @@ generic_bareword_handler (JSON_CallbackParser *parser,
 {
   const uint8_t *at = *p_at;
   while (at < end
-      && parser->flat_len < bareword_len
-      && (char)(*at) == bareword[parser->flat_len])
+      && parser->buffer_length < bareword_len
+      && (char)(*at) == bareword[parser->buffer_length])
     {
-      parser->flat_len += 1;
+      buffer_append_c (parser, *at);
       at++;
     }
   if (at == end)
@@ -1160,27 +1210,28 @@ generic_bareword_handler (JSON_CallbackParser *parser,
   return SCAN_ERROR;
 }
 
+// NOTE: only handles non-initial characters
+// (the first character is handled by maybe_setup_flat_value_state())
 static ScanResult
 scan_flat_value (JSON_CallbackParser *parser,
                  const uint8_t **p_at,
                  const uint8_t  *end)
 {
   const uint8_t *at = *p_at;
-  char end_quote_char;
 
 #define FLAT_VALUE_GOTO_STATE(st_shortname) \
   do{ \
-    FLAT_VALUE_STATE_REPLACE_ENUM_BITS (parser->flat_value_state, FLAT_VALUE_STATE_##st_shortname); \
+    fprintf(stderr,"scan_flat_value: goto %s\n",#st_shortname); \
+    parser->flat_value_state = FLAT_VALUE_STATE_##st_shortname; \
     if (at == end) \
       return SCAN_IN_VALUE; \
     goto case_##st_shortname; \
   }while(0)
 
-  switch (FLAT_VALUE_STATE_MASKED (parser->flat_value_state))
+  switch (parser->flat_value_state)
     {
     case_STRING:
     case FLAT_VALUE_STATE_STRING:
-      end_quote_char = flat_value_state_to_end_quote_char (parser->flat_value_state);
       while (at < end)
         {
           if (*at == '\\')
@@ -1189,7 +1240,7 @@ scan_flat_value (JSON_CallbackParser *parser,
               parser->flat_len = 0;
               FLAT_VALUE_GOTO_STATE(IN_BACKSLASH_SEQUENCE);
             }
-          else if (*at == end_quote_char)
+          else if (*at == parser->quote_char)
             {
               *p_at = at + 1;
               return SCAN_END;
@@ -1214,8 +1265,7 @@ scan_flat_value (JSON_CallbackParser *parser,
                   // when we get this return-value.
                   assert(at == end);
                   buffer_append (parser, at-start, start);
-                  FLAT_VALUE_STATE_REPLACE_ENUM_BITS(parser->flat_value_state,
-                                                     FLAT_VALUE_STATE_IN_UTF8_CHAR);
+                  parser->flat_value_state = FLAT_VALUE_STATE_IN_UTF8_CHAR;
                   *p_at = at;
                   return SCAN_IN_VALUE;
                 case SCAN_ERROR:
@@ -1572,8 +1622,12 @@ scan_flat_value (JSON_CallbackParser *parser,
     
     case_IN_DIGITS:
     case FLAT_VALUE_STATE_IN_DIGITS:
+        fprintf(stderr, "IN_DIGITS: at=%p end=%p *at=%c\n",at,end,*at);
         while ((at < end) && ('0' <= *at && *at <= '9'))
-          at++;
+          {
+            buffer_append_c (parser, *at);
+            at++;
+          }
         if (at == end)
           {
             *p_at = at;
@@ -1581,17 +1635,20 @@ scan_flat_value (JSON_CallbackParser *parser,
           }
         if (*at == 'e' || *at == 'E')
           {
+            buffer_append_c (parser, *at);
             at++;
             FLAT_VALUE_GOTO_STATE(GOT_E);
           }
         else if (*at == '.')
           {
+            buffer_append_c (parser, *at);
             at++;
             FLAT_VALUE_GOTO_STATE(GOT_DECIMAL_POINT);
           }
         else
           {
             *p_at = at;
+            fprintf(stderr,"end of IN_DIGITS: at=%c\n",*at);
             return SCAN_END;
           }
 
@@ -1720,6 +1777,7 @@ scan_flat_value (JSON_CallbackParser *parser,
 
     //case_IN_TRUE:
     case FLAT_VALUE_STATE_IN_TRUE:
+      fprintf(stderr, "calling generic_bareword_handler with true\n");
       *p_at = at;
       return generic_bareword_handler (parser, p_at, end, "true", 4);
 
@@ -1775,6 +1833,23 @@ flat_value_can_terminate (JSON_CallbackParser *parser)
     }
 }
 
+static bool
+do_callback_flat_value (JSON_CallbackParser *parser)
+{
+  if (flat_value_state_is_string (parser->flat_value_state))
+    return do_callback_string (parser);
+  if (flat_value_state_is_number (parser->flat_value_state))
+    return do_callback_number (parser);
+  if (parser->flat_value_state == FLAT_VALUE_STATE_IN_FALSE)
+    return do_callback_boolean (parser, false);
+  if (parser->flat_value_state == FLAT_VALUE_STATE_IN_TRUE)
+    return do_callback_boolean (parser, true);
+  if (parser->flat_value_state == FLAT_VALUE_STATE_IN_NULL)
+    return do_callback_null (parser);
+  assert(0);
+  return false;
+}
+
 JSON_CALLBACK_PARSER_FUNC_DEF
 bool
 json_callback_parser_feed (JSON_CallbackParser *parser,
@@ -1792,7 +1867,21 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
       goto at_end;                                                   \
   }while(0)
 
-#define SKIP_WS()   SKIP_CHAR_TYPE(IS_SPACE)
+#define SKIP_WS()                                                    \
+  do {                                                               \
+    switch (parser->whitespace_scanner (parser, &at, end))           \
+      {                                                              \
+      case SCAN_IN_VALUE:                                            \
+        assert(at == end);                                           \
+        return true;                                                 \
+                                                                     \
+      case SCAN_ERROR:                                               \
+        return false;                                                \
+                                                                     \
+      case SCAN_END:                                                 \
+        break;                                                       \
+      }                                                              \
+  }while(0)
 
 #define RETURN_ERROR(error_code_shortname)                            \
   do{                                                                 \
@@ -1803,6 +1892,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
 
 #define GOTO_STATE(state_shortname)                                   \
   do{                                                                 \
+    fprintf(stderr,"scan_json: goto %s\n", #state_shortname); \
     parser->state = JSON_CALLBACK_PARSER_STATE_ ## state_shortname;   \
     if (at == end)                                                    \
       goto at_end;                                                    \
@@ -1833,6 +1923,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
 
 #define POP()                                                         \
   do{                                                                 \
+    fprintf(stderr,"POP: current depth=%u\n", parser->stack_depth);\
     assert(parser->stack_depth > 0);                                  \
     if (parser->stack_nodes[parser->stack_depth - 1].is_object)       \
       do_callback_end_object(parser);                                 \
@@ -1840,14 +1931,11 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
       do_callback_end_array(parser);                                  \
     --parser->stack_depth;                                            \
     if (parser->stack_depth == 0)                                     \
-      {                                                               \
-        assert(0);                                                    \
-        RETURN_ERROR(INTERNAL);                                       \
-      }                                                               \
+      GOTO_STATE(INTERIM_EXPECTING_COMMA);                            \
     else if (parser->stack_nodes[parser->stack_depth-1].is_object)    \
-      GOTO_STATE(IN_OBJECT);                                           \
+      GOTO_STATE(IN_OBJECT_EXPECTING_COMMA);                          \
     else                                                              \
-      GOTO_STATE(IN_ARRAY);                                            \
+      GOTO_STATE(IN_ARRAY_EXPECTING_COMMA);                           \
   }while(0)
 
 
@@ -1882,6 +1970,8 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
           // some formats.
           CASE(INTERIM):
             SKIP_WS();
+            if (at == end)
+              goto at_end;
             if (*at == '{')
               {
                 // push object marker onto stack
@@ -1904,11 +1994,10 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                     GOTO_STATE(INTERIM_GOT_COMMA);
                   }
               }
-            else if (is_flat_value_char (parser, *at))
+            else if (maybe_setup_flat_value_state (parser, *at))
               {
                 if (!parser->options.permit_bare_values)
                   RETURN_ERROR(EXPECTED_STRUCTURED_VALUE);
-                parser->flat_value_state = initial_flat_value_state (*at);
                 at++;
                 GOTO_STATE(INTERIM_VALUE);
               }
@@ -1971,11 +2060,10 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                     GOTO_STATE(INTERIM_GOT_COMMA);
                   }
               }
-            if (is_flat_value_char (parser, *at))
+            if (maybe_setup_flat_value_state (parser, *at))
               {
                 if (!parser->options.permit_bare_values)
                   RETURN_ERROR(EXPECTED_STRUCTURED_VALUE);
-                parser->flat_value_state = initial_flat_value_state (*at);
                 at++;
                 GOTO_STATE(INTERIM_VALUE);
               }
@@ -1990,6 +2078,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
             switch (scan_flat_value (parser, &at, end))
               {
               case SCAN_END:
+                do_callback_flat_value (parser);
                 GOTO_STATE(INTERIM_EXPECTING_COMMA);
 
               case SCAN_ERROR:
@@ -2010,12 +2099,16 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 return false;
 
               case SCAN_END:
+                if (at == end)
+                  return true;
                 break;
               }
             if (*at == '"')
               {
+                parser->quote_char = *at;
                 at++;
                 parser->flat_value_state = FLAT_VALUE_STATE_STRING;
+                buffer_empty (parser);
                 GOTO_STATE (IN_OBJECT_FIELDNAME);
               }
             else if (parser->options.permit_bare_fieldnames
@@ -2040,6 +2133,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
             switch (scan_flat_value (parser, &at, end))
               {
               case SCAN_END:
+                do_callback_object_key (parser);
                 GOTO_STATE(IN_OBJECT_EXPECTING_COLON);
 
               case SCAN_IN_VALUE:
@@ -2069,7 +2163,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               {
                 do_callback_object_key (parser);
                 at++;
-                GOTO_STATE(IN_OBJECT_VALUE_SPACE);
+                GOTO_STATE(IN_OBJECT_GOT_COLON);
               }
             else
               {
@@ -2086,7 +2180,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
             if (*at == ':')
               {
                 at++;
-                GOTO_STATE(IN_OBJECT_VALUE_SPACE);
+                GOTO_STATE(IN_OBJECT_GOT_COLON);
               }
             else
               {
@@ -2094,7 +2188,10 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
             break;
 
-          CASE(IN_OBJECT_VALUE_SPACE):
+          CASE(IN_OBJECT_GOT_COLON):
+            SKIP_WS();
+            if (at == end)
+              goto at_end;
             if (*at == '{')
               {
                 PUSH_OBJECT();
@@ -2107,9 +2204,8 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 at++;
                 GOTO_STATE(IN_ARRAY);
               }
-            else if (is_flat_value_char (parser, *at))
+            else if (maybe_setup_flat_value_state (parser, *at))
               {
-                parser->flat_value_state = initial_flat_value_state (*at);
                 at++;
                 GOTO_STATE(IN_OBJECT_VALUE);
               }
@@ -2124,9 +2220,11 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
             switch (scan_flat_value (parser, &at, end))
               {
               case SCAN_END:
+                do_callback_flat_value (parser);
                 GOTO_STATE(IN_OBJECT_EXPECTING_COMMA);
 
               case SCAN_IN_VALUE:
+                fprintf(stderr, "scan_flat_value=IN_VALUE\n");
                 assert(at == end);
                 goto at_end;
 
@@ -2134,14 +2232,18 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 return false;
               }
           CASE(IN_OBJECT_EXPECTING_COMMA):
-            while (at < end && IS_SPACE (*at))
-              at++;
+            SKIP_WS();
             if (at == end)
               goto at_end;
             if (*at == ',')
               {
                 at++;
                 GOTO_STATE(IN_OBJECT);
+              }
+            else if (*at == '}')
+              {
+                at++;
+                POP();
               }
             else if (!parser->options.ignore_missing_commas)
               {
@@ -2167,13 +2269,13 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
             else if (*at == ']')
               {
+                at++;
                 POP();
               }
             else if (*at == ',' && parser->options.permit_trailing_commas)
               GOTO_STATE(IN_ARRAY_GOT_COMMA);
-            else if (is_flat_value_char (parser, *at))
+            else if (maybe_setup_flat_value_state (parser, *at))
               {
-                parser->flat_value_state = initial_flat_value_state (*at);
                 at++;
                 GOTO_STATE(IN_ARRAY_VALUE);
               }
@@ -2190,6 +2292,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               case SCAN_ERROR:
                 return false;
               case SCAN_END:
+                do_callback_flat_value (parser);
                 GOTO_STATE(IN_ARRAY_EXPECTING_COMMA);
 
               case SCAN_IN_VALUE:
@@ -2205,6 +2308,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
             else if (*at == ']')
               {
+                at++;
                 POP();
               }
             else if (parser->options.ignore_missing_commas && IS_SPACE(*at))
@@ -2244,9 +2348,8 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 at++;
                 PUSH_ARRAY();
               }
-            else if (is_flat_value_char (parser, *at))
+            else if (maybe_setup_flat_value_state (parser, *at))
               {
-                parser->flat_value_state = initial_flat_value_state (*at);
                 at++;
                 GOTO_STATE(IN_ARRAY_VALUE);
               }
@@ -2341,7 +2444,7 @@ json_callback_parser_end_feed (JSON_CallbackParser *parser)
     case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_FIELDNAME:
     case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_BARE_FIELDNAME:
     case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_VALUE:
-    case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_VALUE_SPACE:
+    case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_GOT_COLON:
     case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_EXPECTING_COMMA:
       parser->error_code = JSON_CALLBACK_PARSER_ERROR_PARTIAL_RECORD;
       return false;
