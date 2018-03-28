@@ -432,6 +432,7 @@ do_callback_end_array (JSON_CallbackParser *parser)
 static inline bool
 do_callback_object_key  (JSON_CallbackParser *parser)
 {
+  fprintf(stderr,"object_key ... bot object=%u\n",parser->stack_nodes[0].is_object);
   return parser->callbacks.object_key (parser->buffer_length,
                                        buffer_nul_terminate (parser),
                                        parser->callback_data);
@@ -853,7 +854,7 @@ json_callback_parser_new (const JSON_Callbacks *callbacks,
                           void *callback_data,
                           const JSON_CallbackParser_Options *options)
 {
-  JSON_CallbackParser *parser = malloc (sizeof (JSON_CallbackParser));
+  JSON_CallbackParser *parser = malloc (sizeof (JSON_CallbackParser) + sizeof (JSON_CallbackParser_StackNode) * options->max_stack_depth);
   parser->options = *options;
   parser->stack_depth = 0;
   parser->stack_nodes = (JSON_CallbackParser_StackNode *) (parser + 1);
@@ -1124,6 +1125,7 @@ is_flat_value_char (JSON_CallbackParser *parser,
 static inline bool
 maybe_setup_flat_value_state (JSON_CallbackParser *parser, uint8_t c)
 {
+  fprintf(stderr, "maybe_setup_flat_value_state: bot is object=%u c=%c\n",parser->stack_nodes[0].is_object, c);
   switch (c)
     {
     case '\'':
@@ -1218,6 +1220,7 @@ scan_flat_value (JSON_CallbackParser *parser,
                  const uint8_t  *end)
 {
   const uint8_t *at = *p_at;
+  fprintf(stderr,"scan_flat_value: *at=%c (%02x), bot obj=%u\n",*at,*at,parser->stack_nodes[0].is_object);
 
 #define FLAT_VALUE_GOTO_STATE(st_shortname) \
   do{ \
@@ -1772,6 +1775,7 @@ scan_flat_value (JSON_CallbackParser *parser,
 
     //case_IN_NULL:
     case FLAT_VALUE_STATE_IN_NULL:
+      fprintf(stderr, "generic_bareword_handler: *p_at=%s %u\n",*p_at,parser->flat_len);
       *p_at = at;
       return generic_bareword_handler (parser, p_at, end, "null", 4);
 
@@ -1892,7 +1896,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
 
 #define GOTO_STATE(state_shortname)                                   \
   do{                                                                 \
-    fprintf(stderr,"scan_json: goto %s\n", #state_shortname); \
+    fprintf(stderr,"scan_json: goto %s [bottom object=%u, depth=%u]\n", #state_shortname, parser->stack_nodes[0].is_object,parser->stack_depth); \
     parser->state = JSON_CALLBACK_PARSER_STATE_ ## state_shortname;   \
     if (at == end)                                                    \
       goto at_end;                                                    \
@@ -1905,6 +1909,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
       RETURN_ERROR(STACK_DEPTH_EXCEEDED);                             \
     JSON_CallbackParser_StackNode *n = parser->stack_nodes + parser->stack_depth;\
     n->is_object = (is_obj);                                          \
+    fprintf(stderr,"PUSH(%u) at depth %u\n", n->is_object, parser->stack_depth);\
     ++parser->stack_depth;                                            \
   }while(0)
   
@@ -1925,6 +1930,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
   do{                                                                 \
     fprintf(stderr,"POP: current depth=%u\n", parser->stack_depth);\
     assert(parser->stack_depth > 0);                                  \
+    fprintf(stderr,"  ... stack-top.is_object=%u\n", parser->stack_nodes[parser->stack_depth - 1].is_object);       \
     if (parser->stack_nodes[parser->stack_depth - 1].is_object)       \
       do_callback_end_object(parser);                                 \
     else                                                              \

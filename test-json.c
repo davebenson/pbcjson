@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#ifndef DSK_HTML_ENTITY_UTF8_sup3
+#define DSK_HTML_ENTITY_UTF8_sup3 "\302\263"
+#endif
+
 typedef  struct Test {
   const char *json;
   const char *expected_callbacks_encoded;
@@ -218,6 +222,7 @@ int main(void)
 {
   JSON_CallbackParser_Options options = JSON_CALLBACK_PARSER_OPTIONS_INIT;
 
+  {
   Test test = {
     "{\"a\": 42, \"b\": \"c\", \"d\":[1,3], \"eee\":true, \"f\":false, \"g\":null}",
     "{k1=a n2=42 k1=b s1=c k1=d [n1=1 n1=3] k3=eee T k1=f F k1=f N}"
@@ -226,6 +231,23 @@ int main(void)
   run_test (&test, 2, &options);
   run_test (&test, 16, &options);
   run_test (&test, 1024, &options);
+  }
+  {
+  Test test = {
+    "[\"\"]",
+    "[s0=]"
+  };
+  run_test (&test, 1, &options);
+  run_test (&test, 2, &options);
+  }
+  {
+  Test test = {
+    "[\"\u00b3\"]", /* U+000B3: SUPERSCRIPT THREE (³) */
+    "[s2=" DSK_HTML_ENTITY_UTF8_sup3 "]"
+  };
+  run_test (&test, 1, &options);
+  run_test (&test, 2, &options);
+  }
 
   return 0;
 }
