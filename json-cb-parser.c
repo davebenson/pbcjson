@@ -4,6 +4,23 @@
 #include <string.h>
 #include <stdio.h>
 
+#if 0
+#include <stdarg.h>
+# define DEBUG_CODE(code)  code
+static void debug_printf(const char *format, ...)
+{
+  va_list args;
+  va_start (args, format);
+  vfprintf(stderr, format, args);
+  fprintf(stderr, "\n");
+  va_end (args);
+}
+# define DEBUG_PRINTF(args)   debug_printf args
+#else
+# define DEBUG_CODE(code)
+# define DEBUG_PRINTF(args)  
+#endif
+
 static const char byte_name_str[] =
 "NUL\0" "^A\0" "^B\0" "^C\0" "^D\0" "^E\0" "^F\0" "^G\0" "^H\0" "TAB\0"   /* 0 .. 9 */
 "NEWLINE\0" "^K\0" "^L\0" "CARRIAGE-RETURN\0" "^N\0" "^O\0" "^P\0" "^Q\0" "^R\0" "^S\0"   /* 10 .. 19 */
@@ -233,6 +250,7 @@ struct JSON_CallbackParser {
   //    * backslash sequence or UTF8 partial character
   unsigned flat_len;
   char flat_data[8];
+  uint16_t hi_surrogate;                // only for GOT_HI_SURROGATE* states
 
   UTF8State utf8_state;
 
@@ -305,6 +323,52 @@ buffer_nul_terminate (JSON_CallbackParser *parser)
 
 static const char *
 error_code_to_string (JSON_CallbackParserError code)
+{
+#define IMPL_CASE(shortname) \
+        case JSON_CALLBACK_PARSER_ERROR_##shortname: \
+          return #shortname
+
+  switch (code)
+    {
+    IMPL_CASE(NONE);
+    IMPL_CASE(EXPECTED_MEMBER_NAME);
+    IMPL_CASE(EXPECTED_COLON);
+    IMPL_CASE(EXPECTED_VALUE);
+    IMPL_CASE(EXPECTED_COMMA_OR_RBRACKET);
+    IMPL_CASE(EXPECTED_COMMA_OR_RBRACE);
+    IMPL_CASE(EXPECTED_HEX_DIGIT);
+    IMPL_CASE(EXPECTED_STRUCTURED_VALUE);
+    IMPL_CASE(EXPECTED_COMMA);
+    IMPL_CASE(EXTRA_COMMA);
+    IMPL_CASE(TRAILING_COMMA);
+    IMPL_CASE(SINGLE_QUOTED_STRING_NOT_ALLOWED);
+    IMPL_CASE(STACK_DEPTH_EXCEEDED);
+    IMPL_CASE(UNEXPECTED_CHAR);
+    IMPL_CASE(BAD_BAREWORD);
+    IMPL_CASE(PARTIAL_RECORD);
+    IMPL_CASE(UTF8_OVERLONG);
+    IMPL_CASE(UTF8_BAD_INITIAL_BYTE);
+    IMPL_CASE(UTF8_BAD_TRAILING_BYTE);
+    IMPL_CASE(UTF16_BAD_SURROGATE_PAIR);
+    IMPL_CASE(STRING_CONTROL_CHARACTER);
+    IMPL_CASE(QUOTED_NEWLINE);
+    IMPL_CASE(DIGIT_NOT_ALLOWED_AFTER_NUL);
+    IMPL_CASE(BACKSLASH_X_NOT_ALLOWED);
+    IMPL_CASE(HEX_NOT_ALLOWED);
+    IMPL_CASE(OCTAL_NOT_ALLOWED);
+    IMPL_CASE(NON_OCTAL_DIGIT);
+    IMPL_CASE(LEADING_DECIMAL_POINT_NOT_ALLOWED);
+    IMPL_CASE(TRAILING_DECIMAL_POINT_NOT_ALLOWED);
+    IMPL_CASE(BAD_NUMBER);
+    IMPL_CASE(INTERNAL);
+    }
+  return NULL;
+
+#undef IMPL_CASE
+};
+ 
+static const char *
+error_code_to_message (JSON_CallbackParserError code)
 {
   switch (code)
     {
@@ -432,7 +496,7 @@ do_callback_end_array (JSON_CallbackParser *parser)
 static inline bool
 do_callback_object_key  (JSON_CallbackParser *parser)
 {
-  fprintf(stderr,"object_key ... bot object=%u\n",parser->stack_nodes[0].is_object);
+  DEBUG_PRINTF(("object_key ... bot object=%u",parser->stack_nodes[0].is_object));
   return parser->callbacks.object_key (parser->buffer_length,
                                        buffer_nul_terminate (parser),
                                        parser->callback_data);
@@ -466,9 +530,10 @@ do_callback_error       (JSON_CallbackParser *parser)
 {
   JSON_CallbackParser_ErrorInfo error_info;
   error_info.code = parser->error_code;
+  error_info.code_str = error_code_to_string (parser->error_code);
   error_info.line_no = parser->line_no;
   error_info.byte_no = parser->byte_no;
-  error_info.message = error_code_to_string (parser->error_code);
+  error_info.message = error_code_to_message (parser->error_code);
   switch (parser->error_code)
     {
     case JSON_CALLBACK_PARSER_ERROR_UNEXPECTED_CHAR:
@@ -901,7 +966,7 @@ utf8_validate_char (JSON_CallbackParser *parser,
       if (at + 1 == end)
         {
           parser->utf8_state = UTF8_STATE_2_1;
-          *p_at = at;
+          *p_at = at + 1;
           return SCAN_IN_VALUE;
         }
       if ((at[1] & 0xc0) != 0x80)
@@ -935,6 +1000,7 @@ utf8_validate_char (JSON_CallbackParser *parser,
         }
       if (at + 2 == end)
         {
+          *p_at = at + 2;
           parser->utf8_state = UTF8_STATE_3_2;
           return SCAN_IN_VALUE;
         }
@@ -970,6 +1036,8 @@ utf8_validate_char (JSON_CallbackParser *parser,
       if (at + 2 == end)
         {
           parser->utf8_state = UTF8_STATE_4_2;
+          *p_at = at + 2;
+          return SCAN_IN_VALUE;
         }
       if ((at[2] & 0xc0) != 0x80)
         {
@@ -979,6 +1047,8 @@ utf8_validate_char (JSON_CallbackParser *parser,
       if (at + 3 == end)
         {
           parser->utf8_state = UTF8_STATE_4_3;
+          *p_at = at + 3;
+          return SCAN_IN_VALUE;
         }
       if ((at[3] & 0xc0) != 0x80)
         {
@@ -1100,6 +1170,50 @@ utf8_continue_validate_char (JSON_CallbackParser *parser,
       *p_at = at + 1;
       return SCAN_END;
     }
+  assert(0);
+  return SCAN_ERROR;
+}
+
+#define MAX_UTF8_LEN 4
+static unsigned
+unicode_to_utf8 (uint32_t c, uint8_t *out)
+{
+  if (c < 0x80)
+    {
+      *out = c;
+      return 1;
+    }
+  else if (c < 0x800)
+    {
+      out[1] = (c & 0x3f) | 0x80;
+      c >>= 6;
+      out[0] = c | 0xc0;
+      return 2;
+    }
+  else if (c < 0x10000)
+    {
+      out[2] = (c & 0x3f) | 0x80;
+      c >>= 6;
+      out[1] = (c & 0x3f) | 0x80;
+      c >>= 6;
+      out[0] = c | 0xe0;
+      return 3;
+    }
+   else if (c < 0x200000)
+    {
+      out[3] = (c & 0x3f) | 0x80;
+      c >>= 6;
+      out[2] = (c & 0x3f) | 0x80;
+      c >>= 6;
+      out[1] = (c & 0x3f) | 0x80;
+      c >>= 6;
+      out[0] = c | 0xf0;
+      return 4;
+    }
+  else
+    {
+      return 0;
+    }
 }
 
 static inline int
@@ -1125,7 +1239,7 @@ is_flat_value_char (JSON_CallbackParser *parser,
 static inline bool
 maybe_setup_flat_value_state (JSON_CallbackParser *parser, uint8_t c)
 {
-  fprintf(stderr, "maybe_setup_flat_value_state: bot is object=%u c=%c\n",parser->stack_nodes[0].is_object, c);
+  DEBUG_PRINTF(("maybe_setup_flat_value_state: bot is object=%u c=%c",parser->stack_nodes[0].is_object, c));
   switch (c)
     {
     case '\'':
@@ -1220,14 +1334,17 @@ scan_flat_value (JSON_CallbackParser *parser,
                  const uint8_t  *end)
 {
   const uint8_t *at = *p_at;
-  fprintf(stderr,"scan_flat_value: *at=%c (%02x), bot obj=%u\n",*at,*at,parser->stack_nodes[0].is_object);
+  DEBUG_PRINTF(("scan_flat_value: *at=%c (%02x), bot obj=%u state=%u",*at,*at,parser->stack_nodes[0].is_object, parser->flat_value_state));
 
 #define FLAT_VALUE_GOTO_STATE(st_shortname) \
   do{ \
-    fprintf(stderr,"scan_flat_value: goto %s\n",#st_shortname); \
+    DEBUG_PRINTF(("scan_flat_value: goto %s\n",#st_shortname)); \
     parser->flat_value_state = FLAT_VALUE_STATE_##st_shortname; \
     if (at == end) \
-      return SCAN_IN_VALUE; \
+      { \
+        *p_at = at; \
+        return SCAN_IN_VALUE; \
+      } \
     goto case_##st_shortname; \
   }while(0)
 
@@ -1251,6 +1368,11 @@ scan_flat_value (JSON_CallbackParser *parser,
           else if ((*at & 0x80) == 0)
             {
               // ascii range, but are naked control sequences allowed?
+              if (*at < 32 || *at == 127)
+                {
+                  parser->error_code = JSON_CALLBACK_PARSER_ERROR_STRING_CONTROL_CHARACTER;
+                  return SCAN_ERROR;
+                }
               buffer_append_c (parser, *at);
               at++;
               continue;
@@ -1380,15 +1502,16 @@ scan_flat_value (JSON_CallbackParser *parser,
               else
                 {
                   // multi-byte passthrough character
-                  parser->flat_data[0] = *at;
-                  parser->flat_len = 1;
+                  const uint8_t *start = at;
                   switch (utf8_validate_char (parser, &at, end))
                     {
                     case SCAN_END:
+                      buffer_append (parser, at - start, start);
                       FLAT_VALUE_GOTO_STATE(STRING);
 
                     case SCAN_IN_VALUE:
                       *p_at = at;
+                      buffer_append (parser, at - start, start);
                       parser->flat_value_state = FLAT_VALUE_STATE_IN_BACKSLASH_UTF8;
                       return SCAN_IN_VALUE;
 
@@ -1441,6 +1564,7 @@ scan_flat_value (JSON_CallbackParser *parser,
           uint32_t code = strtoul (parser->flat_data, NULL, 16);
           if (IS_HI_SURROGATE(code))
             {
+              parser->hi_surrogate = code;
               FLAT_VALUE_GOTO_STATE(GOT_HI_SURROGATE);
             }
           else if (IS_LO_SURROGATE(code))
@@ -1468,7 +1592,10 @@ scan_flat_value (JSON_CallbackParser *parser,
     case_GOT_HI_SURROGATE:
     case FLAT_VALUE_STATE_GOT_HI_SURROGATE:
       if (*at == '\\')
-        FLAT_VALUE_GOTO_STATE(GOT_HI_SURROGATE_IN_BACKSLASH_SEQUENCE);
+        {
+          at++;
+          FLAT_VALUE_GOTO_STATE(GOT_HI_SURROGATE_IN_BACKSLASH_SEQUENCE);
+        }
       else
         {
           *p_at = at;
@@ -1480,6 +1607,7 @@ scan_flat_value (JSON_CallbackParser *parser,
     case FLAT_VALUE_STATE_GOT_HI_SURROGATE_IN_BACKSLASH_SEQUENCE:
       if (*at == 'u' || *at == 'U')
         {
+          at++;
           parser->flat_len = 0;
           FLAT_VALUE_GOTO_STATE(GOT_HI_SURROGATE_IN_BACKSLASH_SEQUENCE_U);
         }
@@ -1503,7 +1631,15 @@ scan_flat_value (JSON_CallbackParser *parser,
           parser->flat_data[4] = 0;
           uint32_t code = strtoul (parser->flat_data, NULL, 16);
           if (IS_LO_SURROGATE(code))
-            FLAT_VALUE_GOTO_STATE(STRING);
+            {
+              uint32_t unicode = COMBINE_SURROGATES (parser->hi_surrogate, code);
+              uint8_t utf8[MAX_UTF8_LEN];
+              unsigned utf8len = unicode_to_utf8(unicode, utf8);
+              DEBUG_PRINTF(( "combined surrogates %04x %04x -> %06x",
+               parser->hi_surrogate, code, unicode));
+              buffer_append (parser, utf8len, utf8);
+              FLAT_VALUE_GOTO_STATE(STRING);
+            }
           else
             {
               *p_at = at;
@@ -1535,49 +1671,62 @@ scan_flat_value (JSON_CallbackParser *parser,
 
     //case_IN_BACKSLASH_UTF8:
     case FLAT_VALUE_STATE_IN_BACKSLASH_UTF8:
-      switch (utf8_continue_validate_char (parser, &at, end))
-        {
-        case SCAN_END:
-          FLAT_VALUE_GOTO_STATE(STRING);
+      {
+        const uint8_t *start = at;
+        switch (utf8_continue_validate_char (parser, &at, end))
+          {
+          case SCAN_END:
+            buffer_append (parser, at - start, start);
+            FLAT_VALUE_GOTO_STATE(STRING);
 
-        case SCAN_IN_VALUE:
-          *p_at = at;
-          return SCAN_IN_VALUE;
-        case SCAN_ERROR:
-          *p_at = at;
-          return SCAN_ERROR;
-        }
+          case SCAN_IN_VALUE:
+            buffer_append (parser, at - start, start);
+            *p_at = at;
+            return SCAN_IN_VALUE;
+          case SCAN_ERROR:
+            *p_at = at;
+            return SCAN_ERROR;
+          }
+      }
 
     //case_IN_UTF8_CHAR:
     case FLAT_VALUE_STATE_IN_UTF8_CHAR:
-      switch (utf8_continue_validate_char (parser, &at, end))
-        {
-        case SCAN_END:
-          FLAT_VALUE_GOTO_STATE(STRING);
+      {
+        const uint8_t *start = at;
+        switch (utf8_continue_validate_char (parser, &at, end))
+          {
+          case SCAN_END:
+            buffer_append (parser, at - start, start);
+            FLAT_VALUE_GOTO_STATE(STRING);
 
-        case SCAN_IN_VALUE:
-          *p_at = at;
-          return SCAN_IN_VALUE;
+          case SCAN_IN_VALUE:
+            buffer_append (parser, at - start, start);
+            *p_at = at;
+            return SCAN_IN_VALUE;
 
-        case SCAN_ERROR:
-          *p_at = at;
-          return SCAN_ERROR;
-        }
+          case SCAN_ERROR:
+            *p_at = at;
+            return SCAN_ERROR;
+          }
+      }
 
     //case_GOT_SIGN:
     case FLAT_VALUE_STATE_GOT_SIGN:
       if (*at == '0')
         {
+          buffer_append_c (parser, '0');
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_0);
         }
       else if ('1' <= *at && *at <= '9')
         {
+          buffer_append_c (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(IN_DIGITS);
         }
       else if (*at == '.' && parser->options.permit_leading_decimal_point)
         {
+          buffer_append_c (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_LEADING_DECIMAL_POINT);
         }
@@ -1592,21 +1741,25 @@ scan_flat_value (JSON_CallbackParser *parser,
     case FLAT_VALUE_STATE_GOT_0:
       if ((*at == 'x' || *at == 'X') && parser->options.permit_hex_numbers)
         {
+          buffer_append_c (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(IN_HEX_EMPTY);
         }
       else if (('0' <= *at && *at <= '7') && parser->options.permit_octal_numbers)
         {
+          buffer_append_c (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(IN_OCTAL);
         }
       else if (*at == '.')
         {
+          buffer_append_c (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_DECIMAL_POINT);
         }
       else if (*at == 'e' || *at == 'E')
         {
+          buffer_append_c (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_E);
         }
@@ -1625,7 +1778,7 @@ scan_flat_value (JSON_CallbackParser *parser,
     
     case_IN_DIGITS:
     case FLAT_VALUE_STATE_IN_DIGITS:
-        fprintf(stderr, "IN_DIGITS: at=%p end=%p *at=%c\n",at,end,*at);
+        DEBUG_PRINTF(( "IN_DIGITS: at=%p end=%p *at=%c\n",at,end,*at));
         while ((at < end) && ('0' <= *at && *at <= '9'))
           {
             buffer_append_c (parser, *at);
@@ -1651,7 +1804,7 @@ scan_flat_value (JSON_CallbackParser *parser,
         else
           {
             *p_at = at;
-            fprintf(stderr,"end of IN_DIGITS: at=%c\n",*at);
+            DEBUG_PRINTF(("end of IN_DIGITS: at=%c",*at));
             return SCAN_END;
           }
 
@@ -1697,6 +1850,7 @@ scan_flat_value (JSON_CallbackParser *parser,
     case FLAT_VALUE_STATE_GOT_E:
       if (*at == '-' || *at == '+')
         {
+          buffer_append_c (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_E_DIGITS);
         }
@@ -1707,6 +1861,7 @@ scan_flat_value (JSON_CallbackParser *parser,
     case FLAT_VALUE_STATE_GOT_E_PM:
       if (IS_DIGIT (*at))
         {
+          buffer_append_c (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_E_DIGITS);
         }
@@ -1720,6 +1875,7 @@ scan_flat_value (JSON_CallbackParser *parser,
     case FLAT_VALUE_STATE_GOT_E_DIGITS:
       while (at < end && IS_DIGIT (*at))
         {
+          buffer_append_c (parser, *at);
           at++;
         }
       if (at == end)
@@ -1753,7 +1909,10 @@ scan_flat_value (JSON_CallbackParser *parser,
     case_GOT_DECIMAL_POINT:
     case FLAT_VALUE_STATE_GOT_DECIMAL_POINT:
       while (at < end && IS_DIGIT (*at))
-        at++;
+        {
+          buffer_append_c (parser, *at);
+          at++;
+        }
       if (at == end)
         {
           *p_at = at;
@@ -1761,6 +1920,7 @@ scan_flat_value (JSON_CallbackParser *parser,
         }
       if (*at == 'e' || *at == 'E')
         {
+          buffer_append_c (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_E);
         }
@@ -1775,13 +1935,13 @@ scan_flat_value (JSON_CallbackParser *parser,
 
     //case_IN_NULL:
     case FLAT_VALUE_STATE_IN_NULL:
-      fprintf(stderr, "generic_bareword_handler: *p_at=%s %u\n",*p_at,parser->flat_len);
+      DEBUG_PRINTF(("generic_bareword_handler: *p_at=%s %u",*p_at,parser->flat_len));
       *p_at = at;
       return generic_bareword_handler (parser, p_at, end, "null", 4);
 
     //case_IN_TRUE:
     case FLAT_VALUE_STATE_IN_TRUE:
-      fprintf(stderr, "calling generic_bareword_handler with true\n");
+      DEBUG_PRINTF(("calling generic_bareword_handler with true"));
       *p_at = at;
       return generic_bareword_handler (parser, p_at, end, "true", 4);
 
@@ -1863,6 +2023,8 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
   const uint8_t *end = data + len;
   const uint8_t *at = data;
 
+  DEBUG_PRINTF(("json_callback_parser_feed: len=%u",(unsigned)len));
+
 #define SKIP_CHAR_TYPE(predicate)                                    \
   do {                                                               \
     while (at < end  &&  predicate(*at))                             \
@@ -1880,6 +2042,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
         return true;                                                 \
                                                                      \
       case SCAN_ERROR:                                               \
+        do_callback_error (parser);                                  \
         return false;                                                \
                                                                      \
       case SCAN_END:                                                 \
@@ -1896,7 +2059,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
 
 #define GOTO_STATE(state_shortname)                                   \
   do{                                                                 \
-    fprintf(stderr,"scan_json: goto %s [bottom object=%u, depth=%u]\n", #state_shortname, parser->stack_nodes[0].is_object,parser->stack_depth); \
+    DEBUG_PRINTF(("scan_json: goto %s (used=%d, len=%d) [bottom object=%u, depth=%u]", #state_shortname, (int)(at-data), (int)len, parser->stack_nodes[0].is_object,parser->stack_depth)); \
     parser->state = JSON_CALLBACK_PARSER_STATE_ ## state_shortname;   \
     if (at == end)                                                    \
       goto at_end;                                                    \
@@ -1909,7 +2072,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
       RETURN_ERROR(STACK_DEPTH_EXCEEDED);                             \
     JSON_CallbackParser_StackNode *n = parser->stack_nodes + parser->stack_depth;\
     n->is_object = (is_obj);                                          \
-    fprintf(stderr,"PUSH(%u) at depth %u\n", n->is_object, parser->stack_depth);\
+    DEBUG_PRINTF(("PUSH(%u) at depth %u", n->is_object, parser->stack_depth));\
     ++parser->stack_depth;                                            \
   }while(0)
   
@@ -1928,9 +2091,9 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
 
 #define POP()                                                         \
   do{                                                                 \
-    fprintf(stderr,"POP: current depth=%u\n", parser->stack_depth);\
+    DEBUG_PRINTF(("POP: current depth=%u", parser->stack_depth));\
     assert(parser->stack_depth > 0);                                  \
-    fprintf(stderr,"  ... stack-top.is_object=%u\n", parser->stack_nodes[parser->stack_depth - 1].is_object);       \
+    DEBUG_PRINTF(("  ... stack-top.is_object=%u", parser->stack_nodes[parser->stack_depth - 1].is_object));       \
     if (parser->stack_nodes[parser->stack_depth - 1].is_object)       \
       do_callback_end_object(parser);                                 \
     else                                                              \
@@ -1959,6 +2122,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
         case SCAN_END:
           break;
         case SCAN_ERROR:
+          do_callback_error (parser);
           return false;
         case SCAN_IN_VALUE:
           return true;
@@ -2037,6 +2201,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                   break;
 
                 case SCAN_ERROR:
+                  do_callback_error (parser);
                   return false;
 
                 case SCAN_IN_VALUE:
@@ -2088,6 +2253,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 GOTO_STATE(INTERIM_EXPECTING_COMMA);
 
               case SCAN_ERROR:
+                do_callback_error (parser);
                 return false;
 
               case SCAN_IN_VALUE:
@@ -2102,6 +2268,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 return true;
 
               case SCAN_ERROR:
+                do_callback_error (parser);
                 return false;
 
               case SCAN_END:
@@ -2117,9 +2284,12 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 buffer_empty (parser);
                 GOTO_STATE (IN_OBJECT_FIELDNAME);
               }
-            else if (parser->options.permit_bare_fieldnames
-                &&  (IS_ASCII_ALPHA (*at) || *at == '_'))
+            else if (IS_ASCII_ALPHA (*at) || *at == '_')
               {
+                if (!parser->options.permit_bare_fieldnames)
+                  {
+                    RETURN_ERROR(BAD_BAREWORD);
+                  }
                 buffer_set (parser, 1, at);
                 at++;
                 GOTO_STATE (IN_OBJECT_BARE_FIELDNAME);
@@ -2147,6 +2317,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 goto at_end;
 
               case SCAN_ERROR:
+                do_callback_error (parser);
                 return false;
               }
             break;
@@ -2230,11 +2401,12 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 GOTO_STATE(IN_OBJECT_EXPECTING_COMMA);
 
               case SCAN_IN_VALUE:
-                fprintf(stderr, "scan_flat_value=IN_VALUE\n");
+                DEBUG_PRINTF(( "scan_flat_value=IN_VALUE"));;
                 assert(at == end);
                 goto at_end;
 
               case SCAN_ERROR:
+                do_callback_error (parser);
                 return false;
               }
           CASE(IN_OBJECT_EXPECTING_COMMA):
@@ -2296,6 +2468,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
             switch (scan_flat_value (parser, &at, end))
               {
               case SCAN_ERROR:
+                do_callback_error (parser);
                 return false;
               case SCAN_END:
                 do_callback_flat_value (parser);
@@ -2307,6 +2480,21 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
 
           CASE(IN_ARRAY_EXPECTING_COMMA):
+            switch (parser->whitespace_scanner (parser, &at, end))
+              {
+              case SCAN_IN_VALUE:
+                assert(at == end);
+                return true;
+
+              case SCAN_ERROR:
+                do_callback_error (parser);
+                return false;
+
+              case SCAN_END:
+                if (at == end)
+                  return true;
+                break;
+              }
             if (*at == ',')
               {
                 at++;
@@ -2336,8 +2524,11 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 assert(at==end);
                 return true;
               case SCAN_ERROR:
+                do_callback_error (parser);
                 return false;
               }
+            if (at == end)
+              return true;
 
             if (*at == ']')
               {
@@ -2455,6 +2646,8 @@ json_callback_parser_end_feed (JSON_CallbackParser *parser)
       parser->error_code = JSON_CALLBACK_PARSER_ERROR_PARTIAL_RECORD;
       return false;
     }
+
+  return false;
 }
 
 

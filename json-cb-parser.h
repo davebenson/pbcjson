@@ -61,7 +61,7 @@ struct JSON_CallbackParser_Options {
 extern JSON_CallbackParser_Options json_callback_parser_options_json;
 extern JSON_CallbackParser_Options json_callback_parser_options_json5;
 #define JSON_CALLBACK_PARSER_OPTIONS_INIT                     \
-(JSON_CallbackParser_Options) {     /*JSON*/                  \
+(JSON_CallbackParser_Options) {                               \
   .max_stack_depth = JSON_CALLBACK_PARSER_DEFAULT_MAX_DEPTH,  \
   .ignore_utf8_errors = 0,                                    \
   .ignore_utf16_errors = 0,                                   \
@@ -131,6 +131,7 @@ typedef enum
 
 typedef struct {
   JSON_CallbackParserError code;
+  const char *code_str;
   uint64_t line_no;
   uint64_t byte_no;
   const char *message;
@@ -152,6 +153,10 @@ struct JSON_Callbacks {
   bool (*number_value)  (unsigned number_length,
                          const char *number,
                          void *callback_data);
+  unsigned (*partial_string_value)
+                        (unsigned cur_string_length_in_bytes,
+                         const char *cur_string,
+                         void *callback_data);
   bool (*string_value)  (unsigned number_length,
                          const char *number,
                          void *callback_data);
@@ -172,6 +177,7 @@ struct JSON_Callbacks {
     prefix ## end_array    ## suffix,      \
     prefix ## object_key   ## suffix,      \
     prefix ## number_value ## suffix,      \
+    prefix ## partial_string_value ## suffix,\
     prefix ## string_value ## suffix,      \
     prefix ## boolean_value## suffix,      \
     prefix ## null_value   ## suffix,      \
