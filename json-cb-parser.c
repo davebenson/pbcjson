@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#if 0
+#if 1
 #include <stdarg.h>
 # define DEBUG_CODE(code)  code
 static void debug_printf(const char *format, ...)
@@ -100,10 +100,12 @@ typedef enum
   JSON_CALLBACK_PARSER_STATE_INTERIM_EXPECTING_COMMA,
   JSON_CALLBACK_PARSER_STATE_INTERIM_GOT_COMMA,
   JSON_CALLBACK_PARSER_STATE_INTERIM_VALUE,
+  JSON_CALLBACK_PARSER_STATE_IN_ARRAY_INITIAL,
   JSON_CALLBACK_PARSER_STATE_IN_ARRAY,
   JSON_CALLBACK_PARSER_STATE_IN_ARRAY_EXPECTING_COMMA,
   JSON_CALLBACK_PARSER_STATE_IN_ARRAY_GOT_COMMA,
   JSON_CALLBACK_PARSER_STATE_IN_ARRAY_VALUE,   // flat_value_state is valid
+  JSON_CALLBACK_PARSER_STATE_IN_OBJECT_INITIAL,
   JSON_CALLBACK_PARSER_STATE_IN_OBJECT,
   JSON_CALLBACK_PARSER_STATE_IN_OBJECT_EXPECTING_COLON,
   JSON_CALLBACK_PARSER_STATE_IN_OBJECT_FIELDNAME,     // flat_value_state is valid
@@ -1493,32 +1495,23 @@ scan_flat_value (JSON_CallbackParser *parser,
             }
           else
             {
-              if (*at >= 0xf8)
+              // multi-byte passthrough character
+              const uint8_t *start = at;
+              switch (utf8_validate_char (parser, &at, end))
                 {
-                  parser->error_code = JSON_CALLBACK_PARSER_ERROR_UTF8_BAD_INITIAL_BYTE;
+                case SCAN_END:
+                  buffer_append (parser, at - start, start);
+                  FLAT_VALUE_GOTO_STATE(STRING);
+
+                case SCAN_IN_VALUE:
+                  *p_at = at;
+                  buffer_append (parser, at - start, start);
+                  parser->flat_value_state = FLAT_VALUE_STATE_IN_BACKSLASH_UTF8;
+                  return SCAN_IN_VALUE;
+
+                case SCAN_ERROR:
                   *p_at = at;
                   return SCAN_ERROR;
-                }
-              else
-                {
-                  // multi-byte passthrough character
-                  const uint8_t *start = at;
-                  switch (utf8_validate_char (parser, &at, end))
-                    {
-                    case SCAN_END:
-                      buffer_append (parser, at - start, start);
-                      FLAT_VALUE_GOTO_STATE(STRING);
-
-                    case SCAN_IN_VALUE:
-                      *p_at = at;
-                      buffer_append (parser, at - start, start);
-                      parser->flat_value_state = FLAT_VALUE_STATE_IN_BACKSLASH_UTF8;
-                      return SCAN_IN_VALUE;
-
-                    case SCAN_ERROR:
-                      *p_at = at;
-                      return SCAN_ERROR;
-                    }
                 }
             }
         }
@@ -1763,17 +1756,23 @@ scan_flat_value (JSON_CallbackParser *parser,
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_E);
         }
-      else if (IS_ALNUM(*at) && *at == '_')
+      else if ('0' <= *at && *at <= '9')
         {
-          parser->error_code = JSON_CALLBACK_PARSER_ERROR_BAD_NUMBER;
-          *p_at = at;
-          return SCAN_ERROR;
+          buffer_append_c (parser, *at);
+          at++;
+          FLAT_VALUE_GOTO_STATE(IN_DIGITS);
         }
-      else
+      else if (is_number_end_char (*at))
         {
           // simply 0
           *p_at = at;
           return SCAN_END;
+        }
+      else
+        {
+          parser->error_code = JSON_CALLBACK_PARSER_ERROR_BAD_NUMBER;
+          *p_at = at;
+          return SCAN_ERROR;
         }
     
     case_IN_DIGITS:
@@ -1801,11 +1800,16 @@ scan_flat_value (JSON_CallbackParser *parser,
             at++;
             FLAT_VALUE_GOTO_STATE(GOT_DECIMAL_POINT);
           }
-        else
+        else if (is_number_end_char (*at))
           {
             *p_at = at;
             DEBUG_PRINTF(("end of IN_DIGITS: at=%c",*at));
             return SCAN_END;
+          }
+        else
+          {
+            parser->error_code = JSON_CALLBACK_PARSER_ERROR_BAD_NUMBER;
+            return SCAN_ERROR;
           }
 
     case_IN_OCTAL:
@@ -2154,7 +2158,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 // push object marker onto stack
                 at++;
                 PUSH_ARRAY();
-                GOTO_STATE(IN_ARRAY);
+                GOTO_STATE(IN_ARRAY_INITIAL);
               }
             else if (*at == ',')
               {
@@ -2379,7 +2383,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               {
                 PUSH_ARRAY();
                 at++;
-                GOTO_STATE(IN_ARRAY);
+                GOTO_STATE(IN_ARRAY_INITIAL);
               }
             else if (maybe_setup_flat_value_state (parser, *at))
               {
@@ -2392,7 +2396,8 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 RETURN_ERROR(UNEXPECTED_CHAR);
               }
 
-            // this state is only used for non-structured values; otherwise, we use the stack
+          // this state is only used for non-structured values;
+          // otherwise, we use the stack.
           CASE(IN_OBJECT_VALUE):
             switch (scan_flat_value (parser, &at, end))
               {
@@ -2432,18 +2437,19 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
             break;
 
 
+          CASE(IN_ARRAY_INITIAL):
           CASE(IN_ARRAY):
             if (*at == '{')
               {
                 at++;
                 PUSH_OBJECT();
-                GOTO_STATE(IN_OBJECT);
+                GOTO_STATE(IN_OBJECT_INITIAL);
               }
             else if (*at == '[')
               {
                 at++;
                 PUSH_ARRAY();
-                GOTO_STATE(IN_ARRAY);
+                GOTO_STATE(IN_ARRAY_INITIAL);
               }
             else if (*at == ']')
               {
@@ -2632,10 +2638,12 @@ json_callback_parser_end_feed (JSON_CallbackParser *parser)
           return false;
         }
 
+    case JSON_CALLBACK_PARSER_STATE_IN_ARRAY_INITIAL:
     case JSON_CALLBACK_PARSER_STATE_IN_ARRAY:
     case JSON_CALLBACK_PARSER_STATE_IN_ARRAY_EXPECTING_COMMA:
     case JSON_CALLBACK_PARSER_STATE_IN_ARRAY_GOT_COMMA:
     case JSON_CALLBACK_PARSER_STATE_IN_ARRAY_VALUE:
+    case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_INITIAL:
     case JSON_CALLBACK_PARSER_STATE_IN_OBJECT:
     case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_EXPECTING_COLON:
     case JSON_CALLBACK_PARSER_STATE_IN_OBJECT_FIELDNAME:

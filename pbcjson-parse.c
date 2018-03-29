@@ -60,27 +60,19 @@ struct PBC_JSON_Parser {
   PBC_JSON_Parser_Stack *stack;
 };
 
-static size_t
-pbc_json_parser_sizeof (const PBC_JSON_ParserOptions *options)
-{
-  return sizeof (PBC_JSON_Parser)
-       + sizeof (PBC_JSON_Parser_Stack) * options->max_stack_depth;
-}
-
-
 static PBC_JSON_Parser *
-pbc_json_parser_init (void *memory,
-                      ProtobufCMessageDescriptor  *message_desc,
+pbc_json_parser_new  (ProtobufCMessageDescriptor  *message_desc,
                       PBC_JSON_ParserFuncs        *funcs,
                       PBC_JSON_ParserOptions      *options,
                       void                        *callback_data)
 {
   PBC_JSON_Parser *parser = memory;
+  JSON_Callback_Parser *subp = json_cal
 
   parser->message_desc = message_desc;
   parser->funcs = *funcs;
   parser->callback_data = callback_data;
-  parser->stack_depth = 0;
+  parser->stack_depth = 64;
   parser->max_stack_depth = options->max_stack_depth;
   parser->stack = (PBC_JSON_Parser_Stack *) (parser + 1);
 
