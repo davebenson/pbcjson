@@ -43,6 +43,7 @@ struct JSON_CallbackParser_Options {
   unsigned permit_bare_fieldnames : 1;
   unsigned permit_single_quote_strings : 1;
   unsigned permit_leading_decimal_point : 1;
+  unsigned permit_trailing_decimal_point : 1;
   unsigned permit_hex_numbers : 1;
   unsigned permit_octal_numbers : 1;
   unsigned disallow_extra_whitespace : 1;       // brutal non-conformant optimization (NOT IMPL)
@@ -53,6 +54,7 @@ struct JSON_CallbackParser_Options {
   unsigned permit_bare_values : 1;
   unsigned permit_array_values : 1;
   unsigned permit_toplevel_commas : 1;
+  unsigned require_toplevel_commas : 1;
 
   // Used for error information.
   unsigned start_line_number;
@@ -130,8 +132,8 @@ struct JSON_Callbacks {
                         (unsigned cur_string_length_in_bytes,
                          const char *cur_string,
                          void *callback_data);
-  bool (*string_value)  (unsigned number_length,
-                         const char *number,
+  bool (*string_value)  (unsigned string_length,
+                         const char *str,
                          void *callback_data);
   bool (*boolean_value) (int boolean_value,
                        void *callback_data);
@@ -205,6 +207,7 @@ json_callback_parser_destroy (JSON_CallbackParser *callback_parser);
   .permit_bare_fieldnames = 0,                                \
   .permit_single_quote_strings = 0,                           \
   .permit_leading_decimal_point = 0,                          \
+  .permit_trailing_decimal_point = 0,                         \
   .permit_hex_numbers = 0,                                    \
   .permit_octal_numbers = 0,                                  \
   .disallow_extra_whitespace = 0,                             \
@@ -213,6 +216,7 @@ json_callback_parser_destroy (JSON_CallbackParser *callback_parser);
   .permit_bare_values = 0,                                    \
   .permit_array_values = 0,                                   \
   .permit_toplevel_commas = 0,                                \
+  .require_toplevel_commas = 0,                               \
   .start_line_number = 1,                                     \
 }
 
@@ -222,24 +226,26 @@ json_callback_parser_destroy (JSON_CallbackParser *callback_parser);
   .ignore_utf8_errors = 0,                                    \
   .ignore_utf16_errors = 0,                                   \
   .ignore_utf8_surrogate_pairs = 0,                           \
-  .permit_backslash_x = 0,                                    \
-  .permit_backslash_0 = 0,                                    \
+  .permit_backslash_x = 1,                                    \
+  .permit_backslash_0 = 1,                                    \
   .permit_trailing_commas = 1,                                \
   .ignore_single_line_comments = 1,                           \
   .ignore_multi_line_comments = 1,                            \
   .ignore_multiple_commas = 0,                                \
   .ignore_missing_commas = 0,                                 \
-  .permit_bare_fieldnames = 0,                                \
-  .permit_single_quote_strings = 0,                           \
-  .permit_leading_decimal_point = 0,                          \
-  .permit_hex_numbers = 0,                                    \
-  .permit_octal_numbers = 0,                                  \
+  .permit_bare_fieldnames = 1,                                \
+  .permit_single_quote_strings = 1,                           \
+  .permit_leading_decimal_point = 1,                          \
+  .permit_trailing_decimal_point = 1,                         \
+  .permit_hex_numbers = 1,                                    \
+  .permit_octal_numbers = 1,                                  \
   .disallow_extra_whitespace = 0,                             \
-  .ignore_unicode_whitespace = 0,                             \
-  .permit_line_continuations_in_strings = 0,                  \
+  .ignore_unicode_whitespace = 1,                             \
+  .permit_line_continuations_in_strings = 1,                  \
   .permit_bare_values = 0,                                    \
   .permit_array_values = 0,                                   \
   .permit_toplevel_commas = 0,                                \
+  .require_toplevel_commas = 0,                               \
   .start_line_number = 1,                                     \
 }
 

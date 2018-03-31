@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#if 1
+#if 0
 #include <stdarg.h>
 # define DEBUG_CODE(code)  code
 static void debug_printf(const char *format, ...)
@@ -151,7 +151,8 @@ typedef enum
   FLAT_VALUE_STATE_GOT_E_DIGITS,
   FLAT_VALUE_STATE_GOT_LEADING_DECIMAL_POINT,
   FLAT_VALUE_STATE_GOT_DECIMAL_POINT,
-#define FLAT_VALUE_STATE__NUMBER_END FLAT_VALUE_STATE_GOT_DECIMAL_POINT
+  FLAT_VALUE_STATE_GOT_DECIMAL_POINT_DIGITS,
+#define FLAT_VALUE_STATE__NUMBER_END FLAT_VALUE_STATE_GOT_DECIMAL_POINT_DIGITS
 
   // literal barewords - true, false, null
   FLAT_VALUE_STATE_IN_NULL,
@@ -582,10 +583,20 @@ do {                                                          \
     CASE(DEFAULT):
       while (at < end && IS_SPACE(*at))
         at++;
+      if (at == end)
+        {
+          *p_at = at;
+          return SCAN_END;
+        }
       if (*at == '/')
         {
           at++;
           GOTO_WHITESPACE_STATE(SLASH);
+        }
+      else if (*at < 128)
+        {
+          *p_at = at;
+          return SCAN_END;
         }
       else if (*at == 0xe1)
         {
@@ -1840,14 +1851,20 @@ scan_flat_value (JSON_CallbackParser *parser,
           parser->error_code = JSON_CALLBACK_PARSER_ERROR_BAD_NUMBER;
           return SCAN_END;
         }
+      buffer_append_c (parser, *at);
       at++;
       FLAT_VALUE_GOTO_STATE(IN_HEX);
 
     case_IN_HEX:
     case FLAT_VALUE_STATE_IN_HEX:
       while (at < end && IS_HEX_DIGIT(*at))
-        at++;
+        {
+          buffer_append_c (parser, *at);
+          at++;
+        }
       *p_at = at;
+      if (at == end)
+        return SCAN_IN_VALUE;
       return SCAN_END;
 
     case_GOT_E:
@@ -1907,11 +1924,42 @@ scan_flat_value (JSON_CallbackParser *parser,
           *p_at = at;
           return SCAN_ERROR;
         }
+      buffer_append_c (parser, *at);
       at++;
-      FLAT_VALUE_GOTO_STATE(GOT_DECIMAL_POINT);
+      FLAT_VALUE_GOTO_STATE(GOT_DECIMAL_POINT_DIGITS);
 
     case_GOT_DECIMAL_POINT:
     case FLAT_VALUE_STATE_GOT_DECIMAL_POINT:
+      if (IS_DIGIT (*at))
+        {
+          buffer_append_c (parser, *at);
+          at++;
+          FLAT_VALUE_GOTO_STATE(GOT_DECIMAL_POINT_DIGITS);
+        }
+      else if (parser->options.permit_trailing_decimal_point
+            && (*at == 'e' || *at == 'E'))
+        {
+          buffer_append_c (parser, *at);
+          at++;
+          FLAT_VALUE_GOTO_STATE(GOT_E);
+        }
+      if (!is_number_end_char(*at))
+        {
+          *p_at = at;
+          parser->error_code = JSON_CALLBACK_PARSER_ERROR_BAD_NUMBER;
+          return SCAN_ERROR;
+        }
+      if (!parser->options.permit_trailing_decimal_point)
+        {
+          *p_at = at;
+          parser->error_code = JSON_CALLBACK_PARSER_ERROR_BAD_NUMBER;
+          return SCAN_ERROR;
+        }
+      *p_at = at;
+      return SCAN_END;
+
+    case_GOT_DECIMAL_POINT_DIGITS:
+    case FLAT_VALUE_STATE_GOT_DECIMAL_POINT_DIGITS:
       while (at < end && IS_DIGIT (*at))
         {
           buffer_append_c (parser, *at);
@@ -1984,8 +2032,11 @@ flat_value_can_terminate (JSON_CallbackParser *parser)
     case FLAT_VALUE_STATE_IN_OCTAL:
     case FLAT_VALUE_STATE_GOT_E_DIGITS:
     case FLAT_VALUE_STATE_IN_HEX:
-    case FLAT_VALUE_STATE_GOT_DECIMAL_POINT:    // XXX
+    case FLAT_VALUE_STATE_GOT_DECIMAL_POINT_DIGITS:
       return 1;
+    case FLAT_VALUE_STATE_GOT_DECIMAL_POINT:
+      return parser->options.permit_trailing_decimal_point;
+
     case FLAT_VALUE_STATE_IN_HEX_EMPTY:
     case FLAT_VALUE_STATE_GOT_SIGN:
     case FLAT_VALUE_STATE_GOT_E:
@@ -2151,7 +2202,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 // push object marker onto stack
                 at++;
                 PUSH_OBJECT();
-                GOTO_STATE(IN_OBJECT);
+                GOTO_STATE(IN_OBJECT_INITIAL);
               }
             else if (*at == '[')
               {
@@ -2183,6 +2234,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
             break;
 
           CASE(INTERIM_EXPECTING_COMMA):
+            SKIP_WS();
             if (*at == ',') 
               {
                 at++;
@@ -2193,9 +2245,13 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 at++;
                 continue;
               }
-            else
+            else if (parser->options.require_toplevel_commas)
               {
                 RETURN_ERROR(UNEXPECTED_CHAR);
+              }
+            else
+              {
+                GOTO_STATE(INTERIM);
               }
 
           CASE(INTERIM_GOT_COMMA):
@@ -2220,12 +2276,14 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               {
                 at++;
                 PUSH_ARRAY();
+                GOTO_STATE(IN_ARRAY_INITIAL);
               }
             if (*at == '{')
               {
                 // push object marker onto stack
+                at++;
                 PUSH_OBJECT();
-                GOTO_STATE(IN_OBJECT);
+                GOTO_STATE(IN_OBJECT_INITIAL);
               }
             if (*at == ',')
               {
@@ -2264,7 +2322,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                 return true;
               }
 
-          CASE(IN_OBJECT):
+          CASE(IN_OBJECT_INITIAL):
             switch (parser->whitespace_scanner (parser, &at, end))
               {
               case SCAN_IN_VALUE:
@@ -2280,7 +2338,8 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
                   return true;
                 break;
               }
-            if (*at == '"')
+            if (*at == '"'
+             || (*at == '\'' && parser->options.permit_single_quote_strings))
               {
                 parser->quote_char = *at;
                 at++;
@@ -2300,6 +2359,54 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               }
             else if (*at == '}')
               {
+                at++;
+                POP();
+              }
+            else
+              {
+                parser->error_byte = *at;
+                RETURN_ERROR(UNEXPECTED_CHAR);
+              }
+
+          CASE(IN_OBJECT):
+            switch (parser->whitespace_scanner (parser, &at, end))
+              {
+              case SCAN_IN_VALUE:
+                assert(at == end);
+                return true;
+
+              case SCAN_ERROR:
+                do_callback_error (parser);
+                return false;
+
+              case SCAN_END:
+                if (at == end)
+                  return true;
+                break;
+              }
+            if (*at == '"'
+            || (*at == '\'' && parser->options.permit_single_quote_strings))
+              {
+                parser->quote_char = *at;
+                at++;
+                parser->flat_value_state = FLAT_VALUE_STATE_STRING;
+                buffer_empty (parser);
+                GOTO_STATE (IN_OBJECT_FIELDNAME);
+              }
+            else if (IS_ASCII_ALPHA (*at) || *at == '_')
+              {
+                if (!parser->options.permit_bare_fieldnames)
+                  {
+                    RETURN_ERROR(BAD_BAREWORD);
+                  }
+                buffer_set (parser, 1, at);
+                at++;
+                GOTO_STATE (IN_OBJECT_BARE_FIELDNAME);
+              }
+            else if (*at == '}')
+              {
+                if (!parser->options.permit_trailing_commas)
+                  RETURN_ERROR(TRAILING_COMMA);
                 at++;
                 POP();
               }
@@ -2377,7 +2484,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               {
                 PUSH_OBJECT();
                 at++;
-                GOTO_STATE(IN_OBJECT);
+                GOTO_STATE(IN_OBJECT_INITIAL);
               }
             else if (*at == '[')
               {
@@ -2466,7 +2573,10 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
             else 
               {
                 parser->error_byte = *at;
-                RETURN_ERROR(UNEXPECTED_CHAR);
+                if (*at == '.')
+                  RETURN_ERROR(BAD_NUMBER);
+                else
+                  RETURN_ERROR(UNEXPECTED_CHAR);
               }
             break;
 
@@ -2538,6 +2648,8 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
 
             if (*at == ']')
               {
+                if (!parser->options.permit_trailing_commas)
+                  RETURN_ERROR(TRAILING_COMMA);
                 at++;
                 POP();
               }
@@ -2545,11 +2657,13 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
               {
                 at++;
                 PUSH_OBJECT();
+                GOTO_STATE(IN_OBJECT_INITIAL);
               }
             else if (*at == '[')
               {
                 at++;
                 PUSH_ARRAY();
+                GOTO_STATE(IN_ARRAY_INITIAL);
               }
             else if (maybe_setup_flat_value_state (parser, *at))
               {

@@ -203,6 +203,13 @@ test_json_cb__error         (const JSON_CallbackParser_ErrorInfo *error,
                              void *callback_data)
 {
   TestInfo *t = callback_data;
+  if (t->expected_callbacks_at[0] != 'E')
+    {
+      fprintf(stderr, "Unexpected error (%s): %s", error->code_str, error->message);
+      if (error->message2)
+        fprintf(stderr, ": %s", error->message2);
+      fprintf(stderr, "\n");
+    }
   TI_ASSERT(t, t->expected_callbacks_at[0] == 'E');
   TI_ASSERT(t, t->expected_callbacks_at[1] == '{');
   t->expected_callbacks_at += 2;
@@ -525,7 +532,19 @@ static Test json__tests[] = {
   ),
   TEST(
     "{\"a\":1,}",
-    "[k1=a n1=1 E{v=TRAILING_COMMA}"
+    "{k1=a n1=1 E{v=TRAILING_COMMA}"
+  ),
+  TEST(
+    "[1.]",
+    "[E{v=BAD_NUMBER}"
+  ),
+  TEST(
+    "[.1]",
+    "[E{v=BAD_NUMBER}"
+  ),
+  TEST(
+    "[1e+a]",
+    "[E{v=BAD_NUMBER}"
   ),
 };
 
@@ -563,14 +582,57 @@ static Test json5__tests[] = {
     "{k1=a n1=1}"
   ),
   TEST(
-    "[1,}",
+    "[1,]",
     "[n1=1]"
+  ),
+  TEST(
+    "['adfa\\\nqwer']",
+    "[s8=adfaqwer]"
+  ),
+  TEST(
+    "[10,{a:null, bbbb:100.000}]",
+    "[n2=10 {k1=a N k4=bbbb n7=100.000}]"
+  ),
+  TEST(
+    "[[1],[2,3,],[4,5,6,],]\n\n",
+    "[[n1=1] [n1=2 n1=3] [n1=4 n1=5 n1=6]]"
+  ),
+  TEST(
+    "[1.]",
+    "[n2=1.]"
+  ),
+  TEST(
+    "[.1]",
+    "[n2=.1]"
+  ),
+  TEST(
+    "[1e+a]",
+    "[E{v=BAD_NUMBER}"
   ),
 };
 static JSON_CallbackParser_Options json5__base_options =
   JSON_CALLBACK_PARSER_OPTIONS_INIT_JSON5;
 #define json5__suite_options_setup NULL
 DEFINE_TEST_SUITE_FROM_TESTS(json5);
+
+#define bare_value__base_options json__base_options
+static void
+bare_value__suite_options_setup (JSON_CallbackParser_Options *opts)
+{
+  opts->permit_bare_values = 1;
+  opts->permit_toplevel_commas = 1;
+}
+static Test bare_value__tests[] = {
+  TEST(
+    "1,2,3,\"hi\",null,true,false,0.1,{},[1]",
+    "n1=1 n1=2 n1=3 s2=hi N T F n3=0.1 {} [ n1=1 ]"
+  ),
+  TEST(
+    "1 2 3 \"hi\" null true false 0.1 {} [1]",
+    "n1=1 n1=2 n1=3 s2=hi N T F n3=0.1 {} [ n1=1 ]"
+  )
+};
+DEFINE_TEST_SUITE_FROM_TESTS(bare_value);
 
 static size_t sizes[] = {
   1,
@@ -611,6 +673,7 @@ run_test_suite (const struct TestSuite *suite)
 struct TestSuite *suites[] = {
   &json__test_suite,
   &json5__test_suite,
+  &bare_value__test_suite
 };
 
 int main(void)
