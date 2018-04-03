@@ -198,7 +198,7 @@ test_json_cb__null_value    (void *callback_data)
   return true;
 }
 
-static bool
+static void
 test_json_cb__error         (const JSON_CallbackParser_ErrorInfo *error,
                              void *callback_data)
 {
@@ -242,7 +242,6 @@ test_json_cb__error         (const JSON_CallbackParser_ErrorInfo *error,
   if (t->expected_callbacks_at[0] == ' ')
     t->expected_callbacks_at += 1;
   t->failed = true;
-  return false;
 }
 
 static void

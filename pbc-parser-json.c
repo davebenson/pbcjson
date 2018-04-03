@@ -33,50 +33,17 @@ sizeof_field_from_type (ProtobufCType type)
 
 #define IS_POWER_OF_TWO_OR_ZERO(x)  ((x) & ((x) - 1))
 
-// Compute the number of bytes used by a particular
-// type in the RepeatedValueArrayList.
-// Since both values are powers-of-two, we return the CHUNK_SIZE.
-//
-// this function should evaluate to a constant return
-// (since the asserts should be provable at compile time)
-static inline size_t
-repeated_value_array_size_for_type(ProtobufCType type)
-{
-  // all other types are "obviously" powers of 2
-  if (type == PROTOBUF_C_TYPE_BYTES)
-    assert(IS_POWER_OF_TWO_OR_ZERO (sizeof(ProtobufCBinaryData)));
-
-  // the simple assumption below fails if this isn't true.
-  assert(IS_POWER_OF_TWO_OR_ZERO (REPEATED_VALUE_ARRAY_CHUNK_SIZE));
-  
-  return REPEATED_VALUE_ARRAY_CHUNK_SIZE;
-}
-
-typedef struct PBC_JSON_ParserError {
-  const char *error_message;
-  const char *error_code;
-
-  //TODO: stack
-
-  /* For ignorable errors:
-   *      returning TRUE from ParserErrorCallback will cause processing to continue.
-   *      returning FALSE from ParserErrorCallback will cause pbc_json_parser_feed to return FALSE.
-   * For non-ignorable:
-   *      the ParserErrorCallback ret-val is ignored, and treated as FALSE.
-   */
-} PBC_JSON_ParserError;
-
 typedef struct RepeatedValueArrayList RepeatedValueArrayList;
 struct RepeatedValueArrayList {
   RepeatedValueArrayList *next;
 };
 
-typedef struct PBC_JSON_Parser_Stack {
+typedef struct PBC_Parser_JSON_Stack {
   const ProtobufCFieldDescriptor *field_desc;
   ProtobufCMessage *message;  // contains field corresponding to field_desc
   RepeatedValueArrayList *rep_list_backward;
   size_t n_repeated_values;
-} PBC_JSON_Parser_Stack;
+} PBC_Parser_JSON_Stack;
 
 typedef struct Slab Slab;
 struct Slab
@@ -88,13 +55,15 @@ struct Slab
 #define SLAB_GET_DATA(slab)   ((uint8_t *) ((slab) + 1))
 
 
-typedef struct PBC_JSON_Parser PBC_JSON_Parser;
-struct PBC_JSON_Parser {
+typedef struct PBC_Parser_JSON PBC_Parser_JSON;
+struct PBC_Parser_JSON {
   PBC_Parser base;
+
+  JSON_CallbackParser *json_parser;
 
   unsigned stack_depth;
   unsigned max_stack_depth;
-  PBC_JSON_Parser_Stack *stack;
+  PBC_Parser_JSON_Stack *stack;
 
   // Set to 1 if an unknown field name is encountered;
   // if an object or array is encountered, the depth is tracked.
@@ -113,7 +82,7 @@ struct PBC_JSON_Parser {
 };
 
 static void *
-parser_alloc_slow_case (PBC_JSON_Parser *parser,
+parser_alloc_slow_case (PBC_Parser_JSON *parser,
                         size_t           size)
 {
   // do we need a new slab?
@@ -142,7 +111,7 @@ parser_alloc_slow_case (PBC_JSON_Parser *parser,
 }
 
 static inline void *
-parser_alloc (PBC_JSON_Parser *parser,
+parser_alloc (PBC_Parser_JSON *parser,
               size_t           size,
               size_t           align)
 {
@@ -159,14 +128,14 @@ parser_alloc (PBC_JSON_Parser *parser,
 }
 
 static void
-parser_allocator_reset (PBC_JSON_Parser *parser)
+parser_allocator_reset (PBC_Parser_JSON *parser)
 {
   parser->cur_first = parser->slab_ring;
   parser->slab_used = 0;
 }
 
 static inline RepeatedValueArrayList *
-parser_allocate_repeated_value_array_list_node (PBC_JSON_Parser *parser)
+parser_allocate_repeated_value_array_list_node (PBC_Parser_JSON *parser)
 {
   if (parser->recycled_repeated_nodes != NULL)
     {
@@ -181,7 +150,7 @@ parser_allocate_repeated_value_array_list_node (PBC_JSON_Parser *parser)
 }
 
 static inline void
-parser_free_repeated_value_array_list_node (PBC_JSON_Parser *parser,
+parser_free_repeated_value_array_list_node (PBC_Parser_JSON *parser,
                                             RepeatedValueArrayList *to_free)
 {
   to_free->next = parser->recycled_repeated_nodes;
@@ -190,27 +159,40 @@ parser_free_repeated_value_array_list_node (PBC_JSON_Parser *parser,
 
 static inline void *
 parser_allocate_value_from_repeated_value_pool
-                              (PBC_JSON_Parser *parser,
+                              (PBC_Parser_JSON *parser,
                                size_t           size_bytes)
 {
-  if (parser->recycled_repeated_nodes == NULL)
+  size_t slab_n_elts = REPEATED_VALUE_ARRAY_CHUNK_SIZE / size_bytes;
+  assert((slab_n_elts & (slab_n_elts-1)) == 0);
+  PBC_Parser_JSON_Stack *s = parser->stack + parser->stack_depth - 1;
+  size_t cur_slab_n = s->n_repeated_values & (slab_n_elts-1);
+  RepeatedValueArrayList *list;
+  if (cur_slab_n == 0)
     {
-      ...
-    }
-  else if (parser->...)
-    {
-      ...
+      if (parser->recycled_repeated_nodes == NULL)
+        {
+          list = parser->recycled_repeated_nodes;
+          parser->recycled_repeated_nodes->next = list;
+        }
+      else
+        {
+          list = malloc (sizeof(RepeatedValueArrayList)
+                       + REPEATED_VALUE_ARRAY_CHUNK_SIZE);
+        }
+      list->next = s->rep_list_backward;
+      s->rep_list_backward = list;
     }
   else
-    {
-      ...
-    }
+    list = s->rep_list_backward;
+  uint8_t *rv = (uint8_t *) (list + 1) + size_bytes * cur_slab_n;
+  s->n_repeated_values += 1;
+  return rv;
 }
 
 static bool
 json__start_object   (void *callback_data)
 {
-  PBC_JSON_Parser *p = callback_data;
+  PBC_Parser_JSON *p = callback_data;
   if (p->skip_depth > 0)
     {
       p->skip_depth += 1;
@@ -228,7 +210,7 @@ json__start_object   (void *callback_data)
     }
   else
     {
-      PBC_JSON_Parser_Stack *s = p->stack + p->stack_depth - 1;
+      PBC_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
       if (s->field_desc->type != PROTOBUF_C_TYPE_MESSAGE)
         {
           p->error_code = "OBJECT_NOT_ALLOWED_FOR_FIELD";
@@ -250,7 +232,7 @@ json__start_object   (void *callback_data)
 static bool
 json__end_object     (void *callback_data)
 {
-  PBC_JSON_Parser *p = callback_data;
+  PBC_Parser_JSON *p = callback_data;
   if (p->skip_depth > 0)
     {
       p->skip_depth -= 1;
@@ -267,7 +249,7 @@ json__end_object     (void *callback_data)
 static bool
 json__start_array    (void *callback_data)
 {
-  PBC_JSON_Parser *p = callback_data;
+  PBC_Parser_JSON *p = callback_data;
   if (p->skip_depth > 0)
     {
       p->skip_depth++;
@@ -287,7 +269,7 @@ json__start_array    (void *callback_data)
     }
   else
     {
-      PBC_JSON_Parser_Stack *s = p->stack + p->stack_depth - 1;
+      PBC_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
       s->rep_list_backward = parser_allocate_repeated_value_array_list_node (p);
       s->rep_list_backward->next = NULL;
       s->n_repeated_values = 0;
@@ -298,7 +280,7 @@ json__start_array    (void *callback_data)
 static bool
 json__end_array      (void *callback_data)
 {
-  PBC_JSON_Parser *p = callback_data;
+  PBC_Parser_JSON *p = callback_data;
   if (p->skip_depth > 0)
     {
       p->skip_depth -= 1;
@@ -306,7 +288,7 @@ json__end_array      (void *callback_data)
         p->skip_depth = 0;
       return true;
     }
-  PBC_JSON_Parser_Stack *s = p->stack + p->stack_depth - 1;
+  PBC_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   const ProtobufCFieldDescriptor *f = s->field_desc;
   assert(f != NULL);
   assert(f->label == PROTOBUF_C_LABEL_REPEATED);
@@ -325,12 +307,14 @@ json__end_array      (void *callback_data)
   // output pointer into contig_array
   uint8_t *contig_at = contig_array;
 
-  RepeatedValueArrayList *partial_arr = s->rep_list_backward;
-  s->rep_list_backward = partial_arr->next;
-
-  size_t contig_full_slab_size = repeated_value_array_size_for_type(f->type);
-  size_t full_slab_n_elts = contig_full_slab_size / sizeof_elt;
-  size_t remaining_elts = s->n_repeated_values;
+  size_t full_slab_n_elts = REPEATED_VALUE_ARRAY_CHUNK_SIZE / sizeof_elt;
+  size_t n_partial_elts = s->n_repeated_values % full_slab_n_elts;
+  RepeatedValueArrayList *partial = NULL;
+  if (n_partial_elts > 0)
+    {
+      partial = s->rep_list_backward;
+      s->rep_list_backward = partial->next;
+    }
 
   // reverse rep_list_backward (which may be empty),
   // but whose elements are totally full of values.
@@ -354,9 +338,8 @@ json__end_array      (void *callback_data)
         {
           next = at->next;
           // memcpy records (everything they point at should be in the slab)
-          memcpy (contig_at, at + 1, contig_full_slab_size);
-          contig_at += contig_full_slab_size;
-          remaining_elts -= full_slab_n_elts;
+          memcpy (contig_at, at + 1, REPEATED_VALUE_ARRAY_CHUNK_SIZE);
+          contig_at += REPEATED_VALUE_ARRAY_CHUNK_SIZE;
 
           // recycle node to a per-parser list
           parser_free_repeated_value_array_list_node (p, at);
@@ -364,10 +347,12 @@ json__end_array      (void *callback_data)
     }
 
   // write the final partial RepeatedValueArrayList
-  memcpy (contig_at, partial_arr + 1, remaining_elts * sizeof_elt);
-
-  // recycle final rep_list node
-  parser_free_repeated_value_array_list_node (p, partial_arr);
+  if (partial != NULL)
+    {
+      memcpy (contig_at, partial + 1, n_partial_elts * sizeof_elt);
+      parser_free_repeated_value_array_list_node (p, partial);
+    }
+  s->field_desc = NULL;
 
   return true;
 }
@@ -377,7 +362,7 @@ json__object_key     (unsigned key_length,
                       const char *key,
                       void *callback_data)
 {
-  PBC_JSON_Parser *p = callback_data;
+  PBC_Parser_JSON *p = callback_data;
   (void) key_length;
   if (p->skip_depth > 0)
     {
@@ -389,7 +374,7 @@ json__object_key     (unsigned key_length,
       return true;
     }
   
-  PBC_JSON_Parser_Stack *s = p->stack + p->stack_depth - 1;
+  PBC_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   ProtobufCMessage *message = s->message;
   const ProtobufCMessageDescriptor *msg_desc = message->descriptor;
   assert (s->field_desc == NULL);
@@ -403,12 +388,174 @@ json__object_key     (unsigned key_length,
   return true;
 }
 
+static void *
+prepare_flat_value (PBC_Parser_JSON *p)
+{
+  PBC_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
+  const ProtobufCFieldDescriptor *f = s->field_desc;
+  void *member = (char *) s->message + f->offset;
+  void *qmember = (char *) s->message + f->quantifier_offset;
+  size_t sizeof_member = sizeof_field_from_type (f->type);
+  void *value = member;
+  if (f->label == PROTOBUF_C_LABEL_REPEATED)
+    {
+      if (s->rep_list_backward != NULL)
+        {
+          value = parser_allocate_value_from_repeated_value_pool (p, sizeof_member);
+        }
+      else
+        {
+          // single unrepeated value
+          * (size_t *) qmember = 1;
+          * (void **) member = value = parser_alloc (p, sizeof_member, sizeof_member);
+        }
+    }
+  else if (f->label == PROTOBUF_C_LABEL_OPTIONAL)
+    {
+      * (protobuf_c_boolean *) qmember = 1;
+    }
+  return value;
+}
+
+static bool
+parse_number_to_value (PBC_Parser_JSON *p,
+                       const char *number,
+                       const ProtobufCFieldDescriptor *f,
+                       void *value_out)
+{
+  char *end;
+  switch (f->type)
+    {
+    case PROTOBUF_C_TYPE_INT32:
+    case PROTOBUF_C_TYPE_SINT32:
+    case PROTOBUF_C_TYPE_SFIXED32:
+      {
+        int v = strtol (number, &end, 0);
+        if (number == end)
+          goto bad_number;
+        * (int32_t *) value_out = v;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_UINT32:
+    case PROTOBUF_C_TYPE_FIXED32:
+      {
+        int v = strtoul (number, &end, 0);
+        if (number == end)
+          goto bad_number;
+        * (uint32_t *) value_out = v;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_FLOAT:
+      {
+        float v = strtod (number, &end);
+        if (number == end)
+          goto bad_number;
+        * (float *) value_out = v;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_INT64:
+    case PROTOBUF_C_TYPE_SINT64:
+    case PROTOBUF_C_TYPE_SFIXED64:
+      {
+        char *end;
+        int64_t v = strtoll (number, &end, 0);
+        if (number == end)
+          goto bad_number;
+        * (int64_t *) value_out = v;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_UINT64:
+    case PROTOBUF_C_TYPE_FIXED64:
+      {
+        uint64_t v = strtoull (number, &end, 0);
+        if (number == end)
+          goto bad_number;
+        * (uint64_t *) value_out = v;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_DOUBLE:
+      {
+        double v = strtod (number, &end);
+        if (number == end)
+          goto bad_number;
+        * (double *) value_out = v;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_BOOL:
+      {
+        unsigned long v = strtoul (number, NULL, 0);
+        * (protobuf_c_boolean *) value_out = v ? 1 : 0;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_ENUM:
+      {
+        unsigned long v = strtoul (number, NULL, 0);
+        const ProtobufCEnumDescriptor *ed = f->descriptor;
+        const ProtobufCEnumValue *ev = protobuf_c_enum_descriptor_get_value (ed, v);
+        if (ev == NULL)
+          {
+            PBC_Parser_Error error = {
+              "BAD_ENUM_NUMERIC_VALUE",
+              "Unknown enum value given as number"
+            }; 
+            p->base.callbacks.error_callback (&p->base, &error, p->base.callback_data);
+            return false;
+          }
+        * (uint32_t *) value_out = v;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_STRING:
+      * (char **) value_out = strcpy (parser_alloc (p, strlen (number) + 1, 1), number);
+      return true;
+
+    case PROTOBUF_C_TYPE_BYTES:
+      {
+        PBC_Parser_Error error = {
+          "BAD_VALUE_FOR_BYTES",
+          "Bytes field cannot be initialized with a number"
+        }; 
+        p->base.callbacks.error_callback (&p->base, &error, p->base.callback_data);
+        return false;
+      }
+
+    case PROTOBUF_C_TYPE_MESSAGE:
+      {
+        PBC_Parser_Error error = {
+          "BAD_VALUE_FOR_MESSAGE",
+          "Message field cannot be initialized with a number"
+        }; 
+        p->base.callbacks.error_callback (&p->base, &error, p->base.callback_data);
+        return false;
+      }
+    }
+  return false;
+
+bad_number:
+  {
+    PBC_Parser_Error error = {
+      "BAD_NUMBER",
+      "Numeric value doesn't match Protobuf type"
+    }; 
+    p->base.callbacks.error_callback (&p->base, &error, p->base.callback_data);
+  }
+  return false;
+}
+
 static bool
 json__number_value   (unsigned number_length,
                       const char *number,
                       void *callback_data)
 {
-  PBC_JSON_Parser *p = callback_data;
+  PBC_Parser_JSON *p = callback_data;
+  (void) number_length;
   if (p->skip_depth > 0)
     {
       if (p->skip_depth == 1)
@@ -416,33 +563,14 @@ json__number_value   (unsigned number_length,
       return true;
     }
   assert(p->stack_depth > 0);
-  PBC_JSON_Parser_Stack *s = p->stack + p->stack_depth - 1;
+
+  PBC_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   const ProtobufCFieldDescriptor *f = s->field_desc;
-  void *member = (char *) s->message + f->offset;
-  void *qmember = (char *) s->message + f->quantifier_offset;
-  void *value = member;
-  size_t sizeof_member = sizeof_field_from_type (f->type);
-  if (f->label == PROTOBUF_C_LABEL_REPEATED)
-    {
-      if (s->rep_list_backward != NULL)
-        {
-          value = parser_allocate_value_from_repeated_value_pool (p, ...);
-          ...
-        }
-      else
-        {
-          // single unrepeated value
-          * (size_t *) qmember = 1;
-          * (void **) member = value = parser_alloc (...);
-        }
-    }
-  else if (f->label == PROTOBUF_C_LABEL_OPTIONAL)
-    {
-      * (protobuf_c_boolean *) qmember = PROTOBUF_C_TRUE;
-    }
+  void *value = prepare_flat_value (p);
 
-
-  ... parse_number_to_value (number, f, value, error_out);
+  if (!parse_number_to_value (p, number, f, value))
+    return false;
+  return true;
 }
 
 #define json__partial_string_value NULL
@@ -456,12 +584,190 @@ json__partial_string_value (unsigned cur_string_length_in_bytes,
 }
 #endif
 
+static inline int
+hexdigit_value (char c)
+{
+  if ('0' <= c && c <= '9')
+    return c - '0';
+  if ('a' <= c && c <= 'f')
+    return c - 'a' + 10;
+  if ('A' <= c && c <= 'F')
+    return c - 'A' + 10;
+  return -1;
+}
+
+static bool
+parse_string_to_value (PBC_Parser_JSON *p,
+                       size_t string_length,
+                       const char *string,
+                       const ProtobufCFieldDescriptor *f,
+                       void *value_out)
+{
+  char *end;
+  switch (f->type)
+    {
+    case PROTOBUF_C_TYPE_INT32:
+    case PROTOBUF_C_TYPE_SINT32:
+    case PROTOBUF_C_TYPE_SFIXED32:
+      {
+        int v = strtol (string, &end, 0);
+        if (string == end)
+          goto bad_number;
+        * (int32_t *) value_out = v;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_UINT32:
+    case PROTOBUF_C_TYPE_FIXED32:
+      {
+        int v = strtoul (string, &end, 0);
+        if (string == end)
+          goto bad_number;
+        * (uint32_t *) value_out = v;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_FLOAT:
+      {
+        float v = strtod (string, &end);
+        if (string == end)
+          goto bad_number;
+        * (float *) value_out = v;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_INT64:
+    case PROTOBUF_C_TYPE_SINT64:
+    case PROTOBUF_C_TYPE_SFIXED64:
+      {
+        char *end;
+        int64_t v = strtoll (string, &end, 0);
+        if (string == end)
+          goto bad_number;
+        * (int64_t *) value_out = v;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_UINT64:
+    case PROTOBUF_C_TYPE_FIXED64:
+      {
+        uint64_t v = strtoull (string, &end, 0);
+        if (string == end)
+          goto bad_number;
+        * (uint64_t *) value_out = v;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_DOUBLE:
+      {
+        double v = strtod (string, &end);
+        if (string == end)
+          goto bad_number;
+        * (double *) value_out = v;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_BOOL:
+      {
+        unsigned long v = strtoul (string, NULL, 0);
+        * (protobuf_c_boolean *) value_out = v ? 1 : 0;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_ENUM:
+      {
+        const ProtobufCEnumDescriptor *ed = f->descriptor;
+        const ProtobufCEnumValue *ev = protobuf_c_enum_descriptor_get_value_by_name (ed, string);
+        if (ev == NULL)
+          {
+            PBC_Parser_Error error = {
+              "BAD_ENUM_STRING_VALUE",
+              "Unknown enum value given as string"
+            }; 
+            p->base.callbacks.error_callback (&p->base, &error, p->base.callback_data);
+            return false;
+          }
+        * (uint32_t *) value_out = ev->value;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_STRING:
+      {
+        char *rv = parser_alloc (p, string_length + 1, 1);
+        memcpy (rv, string, string_length + 1);
+        * (char **) value_out = rv;
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_BYTES:
+      {
+        ProtobufCBinaryData *bd = value_out;
+        bd->len = 0;
+        bd->data = parser_alloc (p, string_length / 2, 1);
+        const char *end = string + string_length;
+        const char *at = string;
+        while (at < end)
+          {
+            int h = hexdigit_value(at[0]);
+            if (h < 0)
+              {
+                if (*at == ' ' || *at == '\n')
+                  {
+                    at++;
+                    continue;
+                  }
+                PBC_Parser_Error error = {
+                  "UNEXPECTED_CHAR",
+                  "only hex-digits and whitespace allowed"
+                };
+                p->base.callbacks.error_callback (&p->base, &error, p->base.callback_data);
+                return false;
+              }
+            int h2 = hexdigit_value(at[1]);
+            if (h2 < 0)
+              {
+                PBC_Parser_Error error = {
+                  "BAD_HEX",
+                  "bad hex digit"
+                };
+                p->base.callbacks.error_callback (&p->base, &error, p->base.callback_data);
+                return false;
+              }
+            bd->data[bd->len++] = (h<<4) | h2;
+            at += 2;
+          }
+        return true;
+      }
+
+    case PROTOBUF_C_TYPE_MESSAGE:
+      {
+        PBC_Parser_Error error = {
+          "BAD_VALUE_FOR_MESSAGE",
+          "Message field cannot be initialized with a number"
+        }; 
+        p->base.callbacks.error_callback (&p->base, &error, p->base.callback_data);
+        return false;
+      }
+    }
+  return false;
+
+bad_number:
+  {
+    PBC_Parser_Error error = {
+      "BAD_NUMBER",
+      "Numeric value doesn't match Protobuf type"
+    }; 
+    p->base.callbacks.error_callback (&p->base, &error, p->base.callback_data);
+  }
+  return false;
+}
+
 static bool
 json__string_value   (unsigned string_length,
                       const char *string,
                       void *callback_data)
 {
-  PBC_JSON_Parser *p = callback_data;
+  PBC_Parser_JSON *p = callback_data;
   if (p->skip_depth > 0)
     {
       if (p->skip_depth == 1)
@@ -470,15 +776,20 @@ json__string_value   (unsigned string_length,
     }
 
   assert(p->stack_depth > 0);
-  PBC_JSON_Parser_Stack *s = p->stack + p->stack_depth - 1;
-  assert(p->field_desc != NULL);
-  ...
+  PBC_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
+  const ProtobufCFieldDescriptor *f = s->field_desc;
+  void *value = prepare_flat_value (p);
+
+  if (!parse_string_to_value (p, string_length, string, f, value))
+    return false;
+  return true;
 }
 
 static bool
 json__boolean_value  (int boolean_value,
                       void *callback_data)
 {
+  PBC_Parser_JSON *p = callback_data;
   if (p->skip_depth > 0)
     {
       if (p->skip_depth == 1)
@@ -486,13 +797,72 @@ json__boolean_value  (int boolean_value,
       return true;
     }
   assert(p->stack_depth > 0);
-  PBC_JSON_Parser_Stack *s = p->stack + p->stack_depth - 1;
+  PBC_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   assert(s->field_desc != NULL);
-  void *value = (char*) s->message + s->field_desc->offset;
-  int value01 = boolean_value ? 1 : 0;
+  void *value_out = (char*) s->message + s->field_desc->offset;
   switch (s->field_desc->type)
     {
-    ...
+    case PROTOBUF_C_TYPE_INT32:
+    case PROTOBUF_C_TYPE_SINT32:
+    case PROTOBUF_C_TYPE_SFIXED32:
+    case PROTOBUF_C_TYPE_UINT32:
+    case PROTOBUF_C_TYPE_FIXED32:
+      * (int32_t *) value_out = boolean_value;
+      return true;
+
+    case PROTOBUF_C_TYPE_FLOAT:
+      * (float *) value_out = boolean_value;
+      return true;
+
+    case PROTOBUF_C_TYPE_INT64:
+    case PROTOBUF_C_TYPE_SINT64:
+    case PROTOBUF_C_TYPE_SFIXED64:
+    case PROTOBUF_C_TYPE_UINT64:
+    case PROTOBUF_C_TYPE_FIXED64:
+      * (int64_t *) value_out = boolean_value;
+      return true;
+
+    case PROTOBUF_C_TYPE_DOUBLE:
+      * (double *) value_out = boolean_value;
+      return true;
+
+    case PROTOBUF_C_TYPE_BOOL:
+      * (protobuf_c_boolean *) value_out = boolean_value;
+      return true;
+
+    case PROTOBUF_C_TYPE_ENUM:
+      {
+        PBC_Parser_Error error = {
+          "BAD_ENUM",
+          "Enum may not be given as boolean",
+        }; 
+        p->base.callbacks.error_callback (&p->base, &error, p->base.callback_data);
+        return false;
+      }
+
+    case PROTOBUF_C_TYPE_STRING:
+      * (char **) value_out = boolean_value ? "true" : "false";
+      return true;
+
+    case PROTOBUF_C_TYPE_BYTES:
+      {
+        PBC_Parser_Error error = {
+          "BAD_VALUE_FOR_BYTES",
+          "Message field cannot be initialized with a boolean"
+        }; 
+        p->base.callbacks.error_callback (&p->base, &error, p->base.callback_data);
+        return false;
+      }
+
+    case PROTOBUF_C_TYPE_MESSAGE:
+      {
+        PBC_Parser_Error error = {
+          "BAD_VALUE_FOR_MESSAGE",
+          "Message field cannot be initialized with a boolean"
+        }; 
+        p->base.callbacks.error_callback (&p->base, &error, p->base.callback_data);
+        return false;
+      }
     }
   return true;
 }
@@ -500,6 +870,7 @@ json__boolean_value  (int boolean_value,
 static bool
 json__null_value     (void *callback_data)
 {
+  PBC_Parser_JSON *p = callback_data;
   if (p->skip_depth > 0)
     {
       if (p->skip_depth == 1)
@@ -507,50 +878,122 @@ json__null_value     (void *callback_data)
       return true;
     }
   assert(p->stack_depth > 0);
-  PBC_JSON_Parser_Stack *s = p->stack + p->stack_depth - 1;
+  PBC_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   assert(s->field_desc != NULL);
   void *qmember = (char*) s->message + s->field_desc->quantifier_offset;
   void *member = (char*) s->message + s->field_desc->offset;
   switch (s->field_desc->label)
     {
+    case PROTOBUF_C_LABEL_NONE:
     case PROTOBUF_C_LABEL_REPEATED:
-      ...
+      {
+        * (size_t *) qmember = 0;
+        return true;
+      }
     case PROTOBUF_C_LABEL_OPTIONAL:
-      ...
+      {
+      if (s->field_desc->quantifier_offset > 0)
+        {
+          * (protobuf_c_boolean *) qmember = 0;
+        }
+      else
+        {
+          * (void **) member = NULL;
+        }
+        return true;
+      }
+      break;
+
     case PROTOBUF_C_LABEL_REQUIRED:
-      ...
-    }
-  int value01 = boolean_value ? 1 : 0;
-  switch (s->field_desc->type)
-    {
-    ...
+      {
+        PBC_Parser_Error error = {
+          "NULL_NOT_ALLOWED",
+          "null not allowed for required field"
+        };
+        p->base.callbacks.error_callback (&p->base, &error, p->base.callback_data);
+        return false;
+      }
     }
   return true;
 }
 
-static bool
+static void
 json__error          (const JSON_CallbackParser_ErrorInfo *error,
                       void *callback_data)
 {
-  ...
+  PBC_Parser_Error e = {
+    error->code_str,
+    error->message
+  };
+  PBC_Parser_JSON *p = callback_data;
+  p->base.callbacks.error_callback (&p->base, &e, p->base.callback_data);
 }
 
-static void
-json__destroy       (void *callback_data)
-{
-  ...
-}
+#define json__destroy NULL
 
 static JSON_Callbacks json_callbacks = JSON_CALLBACKS_DEF(json__, );
 
-PBC_JSON_Parser *
-pbc_json_parser_new  (ProtobufCMessageDescriptor  *message_desc,
-                      PBC_JSON_ParserFuncs        *funcs,
-                      PBC_JSON_ParserOptions      *options,
+
+static bool
+pbc_parser_json_feed (PBC_Parser      *parser,
+                      size_t           data_length,
+                      const uint8_t   *data)
+{
+  PBC_Parser_JSON *p = (PBC_Parser_JSON *) parser;
+  return json_callback_parser_feed (p->json_parser, data_length, data);
+}
+
+static bool
+pbc_parser_json_end_feed (PBC_Parser      *parser)
+{
+  PBC_Parser_JSON *p = (PBC_Parser_JSON *) parser;
+  return json_callback_parser_end_feed (p->json_parser);
+}
+
+static void
+pbc_parser_json_destroy  (PBC_Parser      *parser)
+{
+  PBC_Parser_JSON *p = (PBC_Parser_JSON *) parser;
+  json_callback_parser_destroy (p->json_parser);
+  for (unsigned i = 0; i < p->stack_depth; i++)
+    {
+      PBC_Parser_JSON_Stack *s = p->stack + i;
+      while (s->rep_list_backward != NULL)
+        {
+          RepeatedValueArrayList *kill = s->rep_list_backward;
+          s->rep_list_backward = kill->next;
+          free (kill);
+        }
+    }
+  Slab *at = p->slab_ring->next;
+  p->slab_ring->next = NULL;
+
+  Slab *builtin_slab = (Slab *) (p->stack + p->max_stack_depth);
+  while (at != NULL)
+    {
+      Slab *next = at->next;
+      if (at != builtin_slab)
+        free (at);
+      at = next;
+    }
+
+  while (p->recycled_repeated_nodes != NULL)
+    {
+      RepeatedValueArrayList *kill = p->recycled_repeated_nodes;
+      p->recycled_repeated_nodes = kill->next;
+      free (kill);
+    }
+  pbc_parser_destroy_protected (parser);
+}
+
+PBC_Parser *
+pbc_parser_json_new  (ProtobufCMessageDescriptor  *message_desc,
+                      PBC_Parser_JSONOptions      *options,
+                      PBC_ParserCallbacks         *funcs,
                       void                        *callback_data)
 {
-  size_t size = sizeof (PBC_JSON_Parser)
-              + sizeof (PBC_JSON_Parser_Stack) * options->max_stack_depth
+  size_t size = sizeof (PBC_Parser_JSON)
+              + sizeof (PBC_Parser_JSON_Stack) * options->max_stack_depth
               + sizeof (Slab)
               + options->estimated_message_size;
 
@@ -567,31 +1010,33 @@ pbc_json_parser_new  (ProtobufCMessageDescriptor  *message_desc,
         return NULL;
     }
 
-  PBC_JSON_Parser *parser = malloc (size);
-  parser->json_parser = json_callback_parser_new (&json_callbacks,
-                                                  parser,
-                                                  &cb_parser_options);
-  parser->message_desc = message_desc;
-  parser->funcs = *funcs;
-  parser->callback_data = callback_data;
+  PBC_Parser *parser = pbc_parser_create_protected (message_desc, size,
+                                                    funcs, callback_data);
+  PBC_Parser_JSON *p = (PBC_Parser_JSON *) parser;
+  p->json_parser = json_callback_parser_new (&json_callbacks,
+                                             parser,
+                                             &cb_parser_options);
+
+  parser->feed = pbc_parser_json_feed;
+  parser->end_feed = pbc_parser_json_end_feed;
+  parser->destroy = pbc_parser_json_destroy;
 
   /* If 1, we are in an unknown field of a known object type.
    * If >1, we are skipping and object/array-depth == skip_depth-1
    */
-  parser->skip_depth = 0;
+  p->skip_depth = 0;
 
-  parser->stack_depth = 0;
-  parser->max_stack_depth = options->max_stack_depth;
-  parser->stack = (PBC_JSON_Parser_Stack *) (parser + 1);
+  p->stack_depth = 0;
+  p->max_stack_depth = options->max_stack_depth;
+  p->stack = (PBC_Parser_JSON_Stack *) (p + 1);
 
-  parser->cur_first = (Slab *) (parser->stack + options->max_stack_depth);
-  parser->cur_first->data = (uint8_t *) (parser->cur_first + 1);
-  parser->slab_ring = parser->cur_first;
-  parser->slab_ring->next = parser->slab_ring;
-  parser->slab_used = 0;
-  parser->error_code = NULL;
-  parser->error_message = NULL;
-  parser->recycled_repeated_nodes = NULL;
+  p->cur_first = (Slab *) (p->stack + options->max_stack_depth);
+  p->slab_ring = p->cur_first;
+  p->slab_ring->next = p->slab_ring;
+  p->slab_used = 0;
+  p->error_code = NULL;
+  p->error_message = NULL;
+  p->recycled_repeated_nodes = NULL;
 
   return parser;
 } 

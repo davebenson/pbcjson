@@ -139,7 +139,7 @@ struct JSON_Callbacks {
                        void *callback_data);
   bool (*null_value)    (void *callback_data);
 
-  bool (*error)         (const JSON_CallbackParser_ErrorInfo *error,
+  void (*error)         (const JSON_CallbackParser_ErrorInfo *error,
                          void *callback_data);
 
   void (*destroy)       (void *callback_data);

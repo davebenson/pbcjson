@@ -528,7 +528,7 @@ do_callback_null        (JSON_CallbackParser *parser)
 {
   return parser->callbacks.null_value (parser->callback_data);
 }
-static inline bool
+static inline void
 do_callback_error       (JSON_CallbackParser *parser)
 {
   JSON_CallbackParser_ErrorInfo error_info;
@@ -546,7 +546,7 @@ do_callback_error       (JSON_CallbackParser *parser)
       error_info.message2 = NULL;
       break;
     }
-  return parser->callbacks.error (&error_info, parser->callback_data);
+  parser->callbacks.error (&error_info, parser->callback_data);
 }
 
 static ScanResult
