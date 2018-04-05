@@ -1,5 +1,6 @@
 #include "pbc-parser-length-prefixed.h"
 #include <string.h>
+#include <stdlib.h>
 
 #define LENBUF_SIZE 12
 
@@ -15,6 +16,19 @@ struct PBC_Parser_LengthPrefixed {
   size_t buf_alloced, buf_length;
   uint8_t *buf;
 };
+
+static void *
+PBC_LP_alloc (void *d, size_t s)
+{
+  (void) d;
+  return malloc (s);
+}
+static void
+PBC_LP_free (void *d, void *ptr)
+{
+  (void) d;
+  free (ptr);
+}
 
 static bool
 length_prefixed__feed     (PBC_Parser      *parser,
@@ -232,7 +246,8 @@ in_length_prefix:
 in_data:
   if (lp->length_from_prefix > lp->buf_alloced)
     {
-      ... resize / allocate lp->buf
+      lp->buf_alloced = lp->length_from_prefix;
+      lp->buf = realloc (lp->buf, lp->buf_alloced);
     }
   if (lp->buf_length + data_length >= lp->length_from_prefix)
     {
@@ -241,7 +256,21 @@ in_data:
       data += copy;
       data_length -= copy;
 
-      ... handle message data
+      ProtobufCAllocator allocator = {
+        PBC_LP_alloc,
+        PBC_LP_free,
+        lp
+      };
+      ProtobufCMessage *msg = protobuf_c_message_unpack(lp->base.message_desc, &allocator, lp->buf_length, lp->buf);
+      if (msg == NULL)
+        {
+          PBC_Parser_Error er = {
+            "PROTOBUF_MALFORMED",
+            "Error unpacking Protocol Buffers message"
+          };
+          parser->callbacks.error_callback (parser, &er, parser->callback_data);
+          return false;
+        }
 
       lp->buf_length = 0;
       lp->lenbuf_len = 0;
@@ -267,7 +296,7 @@ length_prefixed__end_feed (PBC_Parser      *parser)
         "PARTIAL_RECORD",
         "terminated in length-prefix itself"
       };
-      parser->callbacks.error(parser, &error, parser->callback_data);
+      parser->callbacks.error_callback(parser, &error, parser->callback_data);
       return false;
     }
   else
@@ -276,7 +305,7 @@ length_prefixed__end_feed (PBC_Parser      *parser)
         "PARTIAL_RECORD",
         "terminated in data body"
       };
-      parser->callbacks.error(parser, &error, parser->callback_data);
+      parser->callbacks.error_callback(parser, &error, parser->callback_data);
       return false;
     }
 }
