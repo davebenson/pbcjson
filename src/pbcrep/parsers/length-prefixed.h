@@ -1,5 +1,5 @@
 
-#include "pbc-parser.h"
+#include "../parser.h"
 
 // LE=little-endian BE=big-endian
 typedef enum

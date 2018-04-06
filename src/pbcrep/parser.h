@@ -51,7 +51,7 @@ struct PBC_Parser {
 };
 
 PBC_Parser *
-pbc_parser_create_protected (ProtobufCMessageDescriptor  *message_desc,
+pbc_parser_create_protected (const ProtobufCMessageDescriptor*message_desc,
                              size_t                       parser_size,
                              PBC_ParserCallbacks         *callbacks,
                              void                        *callback_data);

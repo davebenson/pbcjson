@@ -1,5 +1,5 @@
 #include "json-cb-parser.h"
-#include "pbc-parser-json.h"
+#include "../json.h"
 #include <stdlib.h>
 #include <string.h>
 

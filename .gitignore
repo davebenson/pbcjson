@@ -1,1 +1,13 @@
-generated
+Makefile.in
+Makefile.old
+aclocal.m4
+autom4te.cache/
+compile
+config.log
+config.status
+configure
+depcomp
+generated/
+install-sh
+missing
+

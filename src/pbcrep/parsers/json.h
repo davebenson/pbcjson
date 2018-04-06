@@ -3,7 +3,7 @@
 
 typedef struct PBC_Parser_JSONOptions PBC_Parser_JSONOptions;
 
-#include "pbc-parser.h"
+#include "../parser.h"
 
 typedef enum
 {
@@ -29,7 +29,7 @@ struct PBC_Parser_JSONOptions {
 
 
 // === Streaming Record-Reader API ===
-PBC_Parser       *pbc_parser_new_json   (ProtobufCMessageDescriptor  *message_desc,
+PBC_Parser       *pbc_parser_new_json   (const ProtobufCMessageDescriptor  *message_desc,
                                          const PBC_Parser_JSONOptions*json_options,
                                          PBC_ParserCallbacks         *callbacks,
                                          void                        *callback_data);

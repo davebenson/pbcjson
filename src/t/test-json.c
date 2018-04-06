@@ -1,4 +1,4 @@
-#include "json-cb-parser.h"
+#include "../pbcrep/parsers/json/json-cb-parser.h"
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
