@@ -1,3 +1,10 @@
+*.o
+*.a
+bin
+ar-lib
+.deps
+.dirstamp
+Makefile
 Makefile.in
 Makefile.old
 aclocal.m4
@@ -10,4 +17,5 @@ depcomp
 generated/
 install-sh
 missing
-
+test-suite.log
+test-driver

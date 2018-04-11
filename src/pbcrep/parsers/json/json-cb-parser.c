@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#if 0
+#if 1
 #include <stdarg.h>
 # define DEBUG_CODE(code)  code
 static void debug_printf(const char *format, ...)
@@ -2779,3 +2779,16 @@ json_callback_parser_get_error_info(JSON_CallbackParser *parser)
 {
   return parser->error_code;
 }
+
+//void
+//json_callback_parser_reset (JSON_CallbackParser *parser);
+
+JSON_CALLBACK_PARSER_FUNC_DEF
+void
+json_callback_parser_destroy (JSON_CallbackParser *callback_parser)
+{
+  if (callback_parser->buffer != NULL)
+    free (callback_parser->buffer);
+  free (callback_parser);
+}
+

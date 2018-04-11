@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 typedef struct PBC_Parser  PBC_Parser;
+#define PBC_PARSER_MAGIC_VALUE 0xa0119afa
 
 typedef struct PBC_Parser_Error {
   const char *error_message;
@@ -39,7 +40,7 @@ typedef enum
 struct PBC_Parser {
   uint32_t parser_magic;
   PBC_Parser_ContentType content_type;
-  ProtobufCMessageDescriptor  *message_desc;
+  const ProtobufCMessageDescriptor  *message_desc;
   PBC_ParserCallbacks callbacks;
   void *callback_data;
 

@@ -2,6 +2,7 @@
 #include "../json.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>//DEBUG
 
 static inline size_t
 sizeof_field_from_type (ProtobufCType type)
@@ -240,6 +241,8 @@ json__end_object     (void *callback_data)
         p->skip_depth = 0;
       return true;
     }
+  PBC_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
+  s->field_desc = NULL;
   --(p->stack_depth);
   if (p->stack_depth == 0)
     p->base.callbacks.message_callback (&p->base, p->stack[0].message, p->base.callback_data);
@@ -364,6 +367,7 @@ json__object_key     (unsigned key_length,
 {
   PBC_Parser_JSON *p = callback_data;
   (void) key_length;
+  fprintf(stderr, "object_key: key=%s\n",key);
   if (p->skip_depth > 0)
     {
       /* skip_depth==1 implies that we just got an unknown object key.
@@ -570,6 +574,7 @@ json__number_value   (unsigned number_length,
 
   if (!parse_number_to_value (p, number, f, value))
     return false;
+  s->field_desc = NULL;
   return true;
 }
 
@@ -782,6 +787,7 @@ json__string_value   (unsigned string_length,
 
   if (!parse_string_to_value (p, string_length, string, f, value))
     return false;
+  s->field_desc = NULL;
   return true;
 }
 
@@ -808,10 +814,12 @@ json__boolean_value  (int boolean_value,
     case PROTOBUF_C_TYPE_UINT32:
     case PROTOBUF_C_TYPE_FIXED32:
       * (int32_t *) value_out = boolean_value;
+      s->field_desc = NULL;
       return true;
 
     case PROTOBUF_C_TYPE_FLOAT:
       * (float *) value_out = boolean_value;
+      s->field_desc = NULL;
       return true;
 
     case PROTOBUF_C_TYPE_INT64:
@@ -820,14 +828,17 @@ json__boolean_value  (int boolean_value,
     case PROTOBUF_C_TYPE_UINT64:
     case PROTOBUF_C_TYPE_FIXED64:
       * (int64_t *) value_out = boolean_value;
+      s->field_desc = NULL;
       return true;
 
     case PROTOBUF_C_TYPE_DOUBLE:
       * (double *) value_out = boolean_value;
+      s->field_desc = NULL;
       return true;
 
     case PROTOBUF_C_TYPE_BOOL:
       * (protobuf_c_boolean *) value_out = boolean_value;
+      s->field_desc = NULL;
       return true;
 
     case PROTOBUF_C_TYPE_ENUM:
@@ -842,6 +853,7 @@ json__boolean_value  (int boolean_value,
 
     case PROTOBUF_C_TYPE_STRING:
       * (char **) value_out = boolean_value ? "true" : "false";
+      s->field_desc = NULL;
       return true;
 
     case PROTOBUF_C_TYPE_BYTES:
@@ -864,6 +876,7 @@ json__boolean_value  (int boolean_value,
         return false;
       }
     }
+  s->field_desc = NULL;
   return true;
 }
 
@@ -987,18 +1000,18 @@ pbc_parser_json_destroy  (PBC_Parser      *parser)
 }
 
 PBC_Parser *
-pbc_parser_json_new  (ProtobufCMessageDescriptor  *message_desc,
-                      PBC_Parser_JSONOptions      *options,
+pbc_parser_new_json  (const ProtobufCMessageDescriptor  *message_desc,
+                      const PBC_Parser_JSONOptions      *json_options,
                       PBC_ParserCallbacks         *funcs,
                       void                        *callback_data)
 {
   size_t size = sizeof (PBC_Parser_JSON)
-              + sizeof (PBC_Parser_JSON_Stack) * options->max_stack_depth
+              + sizeof (PBC_Parser_JSON_Stack) * json_options->max_stack_depth
               + sizeof (Slab)
-              + options->estimated_message_size;
+              + json_options->estimated_message_size;
 
   JSON_CallbackParser_Options cb_parser_options;
-  switch (options->json_dialect)
+  switch (json_options->json_dialect)
     {
       case PBC_JSON_DIALECT_JSON:
         cb_parser_options = JSON_CALLBACK_PARSER_OPTIONS_INIT;
@@ -1027,10 +1040,10 @@ pbc_parser_json_new  (ProtobufCMessageDescriptor  *message_desc,
   p->skip_depth = 0;
 
   p->stack_depth = 0;
-  p->max_stack_depth = options->max_stack_depth;
+  p->max_stack_depth = json_options->max_stack_depth;
   p->stack = (PBC_Parser_JSON_Stack *) (p + 1);
 
-  p->cur_first = (Slab *) (p->stack + options->max_stack_depth);
+  p->cur_first = (Slab *) (p->stack + json_options->max_stack_depth);
   p->slab_ring = p->cur_first;
   p->slab_ring->next = p->slab_ring;
   p->slab_used = 0;
