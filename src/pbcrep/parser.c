@@ -17,6 +17,9 @@ void pbc_parser_destroy    (PBC_Parser                  *parser)
   parser->destroy(parser);
 }
 
+static void
+pbc_parser_destroy 
+
 PBC_Parser *
 pbc_parser_create_protected (const ProtobufCMessageDescriptor*message_desc,
                              size_t                       parser_size,
@@ -33,10 +36,6 @@ pbc_parser_create_protected (const ProtobufCMessageDescriptor*message_desc,
   rv->callback_data = callback_data;
   rv->feed = NULL;
   rv->end_feed = NULL;
-  rv->destroy = NULL;
+  rv->destroy = pbcrep_parser_destroy;
   return rv;
-}
-void
-pbc_parser_destroy_protected (PBC_Parser *parser)
-{
 }

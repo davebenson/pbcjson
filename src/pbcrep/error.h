@@ -1,5 +1,5 @@
 
-typedef struct PBC_Error {
+typedef struct PBCREP_Error {
   const char *error_message;
 
   // The interpretation of the error_code_str depends on
@@ -13,5 +13,5 @@ typedef struct PBC_Error {
 
   // may be NULL
   const char *error_message_extra;
-} PBC_Error;
+} PBCREP_Error;
 

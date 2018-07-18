@@ -4,12 +4,12 @@
 
 #define LENBUF_SIZE 12
 
-typedef struct PBC_Parser_LengthPrefixed PBC_Parser_LengthPrefixed;
-struct PBC_Parser_LengthPrefixed {
-  PBC_Parser base;
+typedef struct PBCREP_Parser_LengthPrefixed PBCREP_Parser_LengthPrefixed;
+struct PBCREP_Parser_LengthPrefixed {
+  PBCREP_Parser base;
   uint8_t lenbuf[LENBUF_SIZE];
   uint8_t lenbuf_len;
-  PBC_LengthPrefixed_Format lp_format;
+  PBCREP_LengthPrefixed_Format lp_format;
   bool in_length_prefix;
 
   size_t length_from_prefix;
@@ -18,24 +18,27 @@ struct PBC_Parser_LengthPrefixed {
 };
 
 static void *
-PBC_LP_alloc (void *d, size_t s)
+PBCREP_LP_alloc (void *d, size_t s)
 {
   (void) d;
   return malloc (s);
 }
 static void
-PBC_LP_free (void *d, void *ptr)
+PBCREP_LP_free (void *d, void *ptr)
 {
   (void) d;
   free (ptr);
 }
 
+/* TODO: optimize by providing different feed implementations for
+ * each LengthPrefixFormat.
+ */
 static bool
-length_prefixed__feed     (PBC_Parser      *parser,
+length_prefixed__feed     (PBCREP_Parser      *parser,
                            size_t           data_length,
                            const uint8_t   *data)
 {
-  PBC_Parser_LengthPrefixed *lp = (PBC_Parser_LengthPrefixed*) parser;
+  PBCREP_Parser_LengthPrefixed *lp = (PBCREP_Parser_LengthPrefixed*) parser;
   if (lp->in_length_prefix)
     goto in_length_prefix;
   else
@@ -44,7 +47,7 @@ length_prefixed__feed     (PBC_Parser      *parser,
 in_length_prefix:
   switch (lp->lp_format)
     {
-    case PBC_LENGTH_PREFIXED_UINT8:
+    case PBCREP_LENGTH_PREFIXED_UINT8:
       if (data_length == 0)
         {
           lp->in_length_prefix = true;
@@ -55,7 +58,7 @@ in_length_prefix:
       data_length--;
       goto in_data;
 
-    case PBC_LENGTH_PREFIXED_UINT16_LE:
+    case PBCREP_LENGTH_PREFIXED_UINT16_LE:
       if (data_length + lp->lenbuf_len < 2)
         {
           memcpy (lp->lenbuf + lp->lenbuf_len, data, data_length);
@@ -74,7 +77,7 @@ in_length_prefix:
           goto in_data;
         }
 
-    case PBC_LENGTH_PREFIXED_UINT24_LE:
+    case PBCREP_LENGTH_PREFIXED_UINT24_LE:
       if (data_length + lp->lenbuf_len < 3)
         {
           memcpy (lp->lenbuf + lp->lenbuf_len, data, data_length);
@@ -94,7 +97,7 @@ in_length_prefix:
           goto in_data;
         }
 
-    case PBC_LENGTH_PREFIXED_UINT32_LE:
+    case PBCREP_LENGTH_PREFIXED_UINT32_LE:
       if (data_length + lp->lenbuf_len < 4)
         {
           memcpy (lp->lenbuf + lp->lenbuf_len, data, data_length);
@@ -114,7 +117,7 @@ in_length_prefix:
           data_length -= copy;
           goto in_data;
         }
-    case PBC_LENGTH_PREFIXED_UINT16_BE:
+    case PBCREP_LENGTH_PREFIXED_UINT16_BE:
       if (data_length + lp->lenbuf_len < 2)
         {
           memcpy (lp->lenbuf + lp->lenbuf_len, data, data_length);
@@ -133,7 +136,7 @@ in_length_prefix:
           goto in_data;
         }
 
-    case PBC_LENGTH_PREFIXED_UINT24_BE:
+    case PBCREP_LENGTH_PREFIXED_UINT24_BE:
       if (data_length + lp->lenbuf_len < 3)
         {
           memcpy (lp->lenbuf + lp->lenbuf_len, data, data_length);
@@ -152,7 +155,7 @@ in_length_prefix:
           data_length -= copy;
           goto in_data;
         }
-    case PBC_LENGTH_PREFIXED_UINT32_BE:
+    case PBCREP_LENGTH_PREFIXED_UINT32_BE:
       if (data_length + lp->lenbuf_len < 4)
         {
           memcpy (lp->lenbuf + lp->lenbuf_len, data, data_length);
@@ -173,7 +176,7 @@ in_length_prefix:
           goto in_data;
         }
 
-    case PBC_LENGTH_PREFIXED_B128:
+    case PBCREP_LENGTH_PREFIXED_B128:
       while (lp->lenbuf_len < LENBUF_SIZE && data_length > 0)
         {
           bool last = (*data & 0x80) == 0;
@@ -184,7 +187,7 @@ in_length_prefix:
         }
       if (lp->lenbuf_len == LENBUF_SIZE)
         {
-          PBC_Parser_Error error = {
+          PBCREP_Parser_Error error = {
             "BAD_B128",
             "overlong or bad B128-encoded length-prefix"
           };
@@ -208,7 +211,7 @@ in_length_prefix:
         }
         goto in_data;
       
-    case PBC_LENGTH_PREFIXED_B128_BE:
+    case PBCREP_LENGTH_PREFIXED_B128_BE:
       while (lp->lenbuf_len < LENBUF_SIZE && data_length > 0)
         {
           bool last = (*data & 0x80) == 0;
@@ -219,7 +222,7 @@ in_length_prefix:
         }
       if (lp->lenbuf_len == LENBUF_SIZE)
         {
-          PBC_Parser_Error error = {
+          PBCREP_Parser_Error error = {
             "BAD_B128",
             "overlong or bad B128-encoded big-endian length-prefix"
           };
@@ -257,14 +260,14 @@ in_data:
       data_length -= copy;
 
       ProtobufCAllocator allocator = {
-        PBC_LP_alloc,
-        PBC_LP_free,
+        PBCREP_LP_alloc,
+        PBCREP_LP_free,
         lp
       };
       ProtobufCMessage *msg = protobuf_c_message_unpack(lp->base.message_desc, &allocator, lp->buf_length, lp->buf);
       if (msg == NULL)
         {
-          PBC_Parser_Error er = {
+          PBCREP_Parser_Error er = {
             "PROTOBUF_MALFORMED",
             "Error unpacking Protocol Buffers message"
           };
@@ -285,14 +288,14 @@ in_data:
 }
 
 static bool
-length_prefixed__end_feed (PBC_Parser      *parser)
+length_prefixed__end_feed (PBCREP_Parser      *parser)
 {
-  PBC_Parser_LengthPrefixed *lp = (PBC_Parser_LengthPrefixed*) parser;
+  PBCREP_Parser_LengthPrefixed *lp = (PBCREP_Parser_LengthPrefixed*) parser;
   if (lp->in_length_prefix)
     {
       if (lp->lenbuf_len == 0)
         return true;
-      PBC_Parser_Error error = {
+      PBCREP_Parser_Error error = {
         "PARTIAL_RECORD",
         "terminated in length-prefix itself"
       };
@@ -301,7 +304,7 @@ length_prefixed__end_feed (PBC_Parser      *parser)
     }
   else
     {
-      PBC_Parser_Error error = {
+      PBCREP_Parser_Error error = {
         "PARTIAL_RECORD",
         "terminated in data body"
       };
@@ -311,24 +314,24 @@ length_prefixed__end_feed (PBC_Parser      *parser)
 }
 
 static void
-length_prefixed__destroy  (PBC_Parser      *parser)
+length_prefixed__destroy  (PBCREP_Parser      *parser)
 {
-  PBC_Parser_LengthPrefixed *lp = (PBC_Parser_LengthPrefixed*) parser;
+  PBCREP_Parser_LengthPrefixed *lp = (PBCREP_Parser_LengthPrefixed*) parser;
   if (lp->buf != NULL)
     free (lp->buf);
   pbc_parser_destroy_protected (parser);
 }
 
-PBC_Parser *
-pbc_parser_new_length_prefixed (PBC_LengthPrefixed_Format lp_format,
+PBCREP_Parser *
+pbc_parser_new_length_prefixed (PBCREP_LengthPrefixed_Format lp_format,
                                 const ProtobufCMessageDescriptor *desc,
-                                PBC_ParserCallbacks         *callbacks,
+                                PBCREP_ParserCallbacks         *callbacks,
                                 void                        *callback_data)
 {
-  PBC_Parser *p;
-  PBC_Parser_LengthPrefixed *lp;
-  p = pbc_parser_create_protected (desc, sizeof (PBC_Parser_LengthPrefixed), callbacks, callback_data);
-  lp = (PBC_Parser_LengthPrefixed *) p;
+  PBCREP_Parser *p;
+  PBCREP_Parser_LengthPrefixed *lp;
+  p = pbc_parser_create_protected (desc, sizeof (PBCREP_Parser_LengthPrefixed), callbacks, callback_data);
+  lp = (PBCREP_Parser_LengthPrefixed *) p;
 
   lp->lp_format = lp_format;
   lp->lenbuf_len = 0;
@@ -336,6 +339,40 @@ pbc_parser_new_length_prefixed (PBC_LengthPrefixed_Format lp_format,
   lp->buf_alloced = 0;
   lp->buf_length = 0;
   lp->buf = NULL;
-
+  lp->base.end_feed = length_prefixed_end_feed;
+  switch (lp_format)
+    {
+    case PBCREP_LENGTH_PREFIXED_UINT8:
+      lp->base.feed = length_prefixed_feed__uint8;
+      break;
+    case PBCREP_LENGTH_PREFIXED_UINT16_LE:
+      lp->base.feed = length_prefixed_feed__XXX;
+      break;
+    case PBCREP_LENGTH_PREFIXED_UINT24_LE,
+      lp->base.feed = length_prefixed_feed__XXX;
+      break;
+    case PBCREP_LENGTH_PREFIXED_UINT32_LE,
+      lp->base.feed = length_prefixed_feed__XXX;
+      break;
+    //case PBCREP_LENGTH_PREFIXED_UINT48_LE:
+    //case PBCREP_LENGTH_PREFIXED_UINT64_LE:
+    case PBCREP_LENGTH_PREFIXED_UINT16_BE,
+      lp->base.feed = length_prefixed_feed__XXX;
+      break;
+    case PBCREP_LENGTH_PREFIXED_UINT24_BE,
+      lp->base.feed = length_prefixed_feed__XXX;
+      break;
+    case PBCREP_LENGTH_PREFIXED_UINT32_BE,
+      lp->base.feed = length_prefixed_feed__XXX;
+      break;
+    //case PBCREP_LENGTH_PREFIXED_UINT48_BE:
+    //case PBCREP_LENGTH_PREFIXED_UINT64_BE:
+    case PBCREP_LENGTH_PREFIXED_B128,
+      lp->base.feed = length_prefixed_feed__XXX;
+      break;
+    case PBCREP_LENGTH_PREFIXED_B128_BE
+      lp->base.feed = length_prefixed_feed__XXX;
+      break;
+    }
   return p;
 }

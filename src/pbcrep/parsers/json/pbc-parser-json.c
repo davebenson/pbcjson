@@ -204,6 +204,7 @@ json__start_object   (void *callback_data)
       parser_allocator_reset (p);
       p->stack[0].message = parser_alloc (p, p->base.message_desc->sizeof_message, 8);
       protobuf_c_message_init (p->base.message_desc, p->stack[0].message);
+      fprintf(stderr, "ALLOCATED MESSAGE %p at stack depth 0 named %s\n", p->stack[0].message, p->base.message_desc->name);
       p->stack[0].field_desc = NULL;
       p->stack[0].rep_list_backward = NULL;
       p->stack[0].n_repeated_values = 0;
@@ -220,6 +221,7 @@ json__start_object   (void *callback_data)
         }
       const ProtobufCMessageDescriptor *md = s->field_desc->descriptor;
       s[1].message = parser_alloc (p, p->base.message_desc->sizeof_message, 8);
+      fprintf(stderr, "ALLOCATED MESSAGE %p at stack depth %u (%s)\n", s[1].message, p->stack_depth, md->name);
       protobuf_c_message_init (md, s[1].message);
       s[1].field_desc = NULL;
       s[1].n_repeated_values = 0;
@@ -380,7 +382,9 @@ json__object_key     (unsigned key_length,
   
   PBC_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   ProtobufCMessage *message = s->message;
+  fprintf(stderr, "looking for field %s in message %p\n", key, message);
   const ProtobufCMessageDescriptor *msg_desc = message->descriptor;
+  assert(msg_desc->magic == PROTOBUF_C__MESSAGE_DESCRIPTOR_MAGIC);
   assert (s->field_desc == NULL);
   const ProtobufCFieldDescriptor *field_desc = protobuf_c_message_descriptor_get_field_by_name (msg_desc, key);
   if (field_desc == NULL)

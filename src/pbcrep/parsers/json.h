@@ -20,11 +20,12 @@ struct PBC_Parser_JSONOptions {
   size_t estimated_message_size;
 };
 
-#define PBC_PARSER_JSON_OPTIONS_INIT { \
-  64,            /* max_stack_depth */  \
-  PBC_JSON_DIALECT_JSON, \
-  512   /* estimated_message_size */ \
-}
+#define PBC_PARSER_JSON_OPTIONS_INIT                                 \
+  (PBC_Parser_JSONOptions) {                                         \
+    64,                     /* max_stack_depth */                    \
+    PBC_JSON_DIALECT_JSON,                                           \
+    512                     /* estimated_message_size */             \
+  }
 
 
 
