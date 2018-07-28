@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#if 1
+#if 0
 #include <stdarg.h>
 # define DEBUG_CODE(code)  code
 static void debug_printf(const char *format, ...)

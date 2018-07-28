@@ -170,10 +170,10 @@ parser_allocate_value_from_repeated_value_pool
   RepeatedValueArrayList *list;
   if (cur_slab_n == 0)
     {
-      if (parser->recycled_repeated_nodes == NULL)
+      if (parser->recycled_repeated_nodes != NULL)
         {
           list = parser->recycled_repeated_nodes;
-          parser->recycled_repeated_nodes->next = list;
+          parser->recycled_repeated_nodes->next = list->next;
         }
       else
         {
@@ -382,8 +382,8 @@ json__object_key     (unsigned key_length,
   
   PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   ProtobufCMessage *message = s->message;
-  fprintf(stderr, "looking for field %s in message %p\n", key, message);
   const ProtobufCMessageDescriptor *msg_desc = message->descriptor;
+  fprintf(stderr, "looking for field %s in message %p desc %p\n", key, message, msg_desc);
   assert(msg_desc->magic == PROTOBUF_C__MESSAGE_DESCRIPTOR_MAGIC);
   assert (s->field_desc == NULL);
   const ProtobufCFieldDescriptor *field_desc = protobuf_c_message_descriptor_get_field_by_name (msg_desc, key);
@@ -393,6 +393,7 @@ json__object_key     (unsigned key_length,
       return true;
     }
   s->field_desc = field_desc;
+  fprintf(stderr, "field_desc: name=%s offset=%u qoffset=%u type=%u label=%u\n",field_desc->name, field_desc->offset, field_desc->quantifier_offset, field_desc->type, field_desc->label);
   return true;
 }
 
@@ -420,7 +421,12 @@ prepare_flat_value (PBCREP_Parser_JSON *p)
     }
   else if (f->label == PROTOBUF_C_LABEL_OPTIONAL)
     {
-      * (protobuf_c_boolean *) qmember = 1;
+      // XXX: quantifier_offset==0 for optional strings etc,
+      // but we don't normally guarantee that.
+      // Nonetheless, this will work fine,
+      // since the message-descriptor is at offset=0.
+      if (f->quantifier_offset > 0)
+        * (protobuf_c_boolean *) qmember = 1;
     }
   return value;
 }
@@ -552,7 +558,7 @@ bad_number:
   {
     PBCREP_Error error = {
       .error_code_str = "BAD_NUMBER",
-      "Numeric value doesn't match Protobuf type"
+      .error_message = "Numeric value doesn't match Protobuf type"
     }; 
     p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
   }
@@ -693,7 +699,7 @@ parse_string_to_value (PBCREP_Parser_JSON *p,
           {
             PBCREP_Error error = {
               .error_code_str = "BAD_ENUM_STRING_VALUE",
-              "Unknown enum value given as string"
+              .error_message = "Unknown enum value given as string"
             }; 
             p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
             return false;

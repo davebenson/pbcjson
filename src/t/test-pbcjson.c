@@ -53,7 +53,12 @@ json_message_error_callback   (PBCREP_Parser      *parser,
   TestInfo *ti = callback_data;
   assert(ti->expect_index < ti->test->n_expects);
   Expect *mt = ti->test->expects + ti->expect_index;
-  assert(mt->callback_message != NULL);
+  if (mt->callback_message != NULL) {
+    fprintf(stderr, "got unexpected error in json_message_error_callback: %s:%u: %s\n", __FILE__, __LINE__, error->error_message);
+    // fallthrough
+  }
+  assert(mt->callback_message == NULL);
+  assert(mt->callback_error != NULL);
   mt->callback_error (error);
   ti->expect_index++;
   ti->got_error = true;
@@ -109,11 +114,11 @@ static const char basic_json__str[] =
   "\"email\":\"dave@dave.com\","
   "\"phone\":[{"
     "\"number\":\"555-1111\","
-    "\"type\":\"mobile\""
+    "\"type\":\"MOBILE\""
   "},"
   "{"
     "\"number\":\"555-1112\","
-    "\"type\":\"work\""
+    "\"type\":\"WORK\""
   "}],"
   "\"test_ints\":[1,2,3]"
 "}";
