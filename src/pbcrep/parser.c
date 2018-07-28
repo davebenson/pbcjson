@@ -1,41 +1,47 @@
 #include <stdlib.h>
-#include "parser.h"
+#include "../pbcrep.h"
 
 
-bool pbc_parser_feed       (PBC_Parser                  *parser,
-                            size_t                       data_length,
-                            const uint8_t               *data)
+bool
+pbcrep_parser_feed       (PBCREP_Parser               *parser,
+                          size_t                       data_length,
+                          const uint8_t               *data)
 {
   return parser->feed(parser, data_length, data);
 }
-bool pbc_parser_end_feed   (PBC_Parser                  *parser)
+bool
+pbcrep_parser_end_feed   (PBCREP_Parser               *parser)
 {
   return parser->end_feed(parser);
 }
-void pbc_parser_destroy    (PBC_Parser                  *parser)
+void
+pbcrep_parser_destroy    (PBCREP_Parser               *parser)
 {
   parser->destroy(parser);
+
+  if (parser->target.destroy != NULL)
+    parser->target.destroy (parser, parser->target.callback_data);
+
+  // Now, undo any work done by
+  // pbc_parser_create_protected().
+  free (parser);
 }
 
-static void
-pbc_parser_destroy 
-
-PBC_Parser *
-pbc_parser_create_protected (const ProtobufCMessageDescriptor*message_desc,
-                             size_t                       parser_size,
-                             PBC_ParserCallbacks         *callbacks,
-                             void                        *callback_data)
+PBCREP_Parser *
+pbcrep_parser_create_protected (const ProtobufCMessageDescriptor*message_desc,
+                                size_t                       parser_size,
+                                PBCREP_ParserTarget          target)
 {
-  assert(parser_size >= sizeof(struct PBC_Parser));
-  PBC_Parser *rv = malloc (parser_size);
+  assert(parser_size >= sizeof(struct PBCREP_Parser));
+  PBCREP_Parser *rv = malloc (parser_size);
   assert(rv != NULL);
-  rv->parser_magic = PBC_PARSER_MAGIC_VALUE;
-  rv->content_type = PBC_PARSER_CONTENT_TYPE_ANY;
+  rv->parser_magic = PBCREP_PARSER_MAGIC_VALUE;
+  rv->content_type = PBCREP_PARSER_CONTENT_TYPE_ANY;
   rv->message_desc = message_desc;
-  rv->callbacks = *callbacks;
-  rv->callback_data = callback_data;
+  rv->target = target;
   rv->feed = NULL;
   rv->end_feed = NULL;
   rv->destroy = pbcrep_parser_destroy;
   return rv;
 }
+

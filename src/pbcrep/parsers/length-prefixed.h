@@ -1,7 +1,12 @@
+#ifndef __PBCREP_H_
+#error only include pbcrep.h
+#endif
 
-#include "../parser.h"
-
+//
+// PBCREP_LengthPrefixed_Format
+//
 // LE=little-endian BE=big-endian
+//
 typedef enum
 {
   PBCREP_LENGTH_PREFIXED_UINT8,
@@ -19,9 +24,22 @@ typedef enum
   PBCREP_LENGTH_PREFIXED_B128_BE
 } PBCREP_LengthPrefixed_Format;
 
+//
+// pbc_parser_new_length_prefixed()
+//
+// Create a parser that uses prefixes to provide the message's length.
+//
 PBCREP_Parser *pbcrep_parser_new_length_prefixed
                                  (PBCREP_LengthPrefixed_Format lp_format,
                                   const ProtobufCMessageDescriptor *desc,
-                                  PBCREP_ParserCallbacks   *callbacks,
-                                  void                     *callback_data);
+                                  PBCREP_ParserTarget       target);
 
+
+//
+// pbcrep_parser_length_prefixed_set_format()
+//
+// This should only be called from your message callback, target.callback.
+//
+void pbcrep_parser_length_prefixed_set_format
+                                 (PBCREP_Parser *parser,
+                                  PBCREP_LengthPrefixed_Format format);

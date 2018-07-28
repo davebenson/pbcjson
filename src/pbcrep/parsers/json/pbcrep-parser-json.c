@@ -1005,9 +1005,9 @@ pbc_parser_json_destroy  (PBCREP_Parser      *parser)
 }
 
 PBCREP_Parser *
-pbc_parser_new_json  (const ProtobufCMessageDescriptor  *message_desc,
-                      const PBCREP_Parser_JSONOptions   *json_options,
-                      PBCREP_ParserTarget                target)
+pbcrep_parser_new_json  (const ProtobufCMessageDescriptor  *message_desc,
+                         const PBCREP_Parser_JSONOptions   *json_options,
+                         PBCREP_ParserTarget                target)
 {
   size_t size = sizeof (PBCREP_Parser_JSON)
               + sizeof (PBCREP_Parser_JSON_Stack) * json_options->max_stack_depth

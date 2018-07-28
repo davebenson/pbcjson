@@ -1,5 +1,5 @@
 #include "generated/test1.pb-c.h"
-#include "../pbcrep/parsers/json.h"
+#include "../pbcrep.h"
 #include <string.h>
 
 #ifndef MIN
@@ -11,7 +11,7 @@
 
 typedef struct Expect {
   void (*callback_message)(const ProtobufCMessage *msg);
-  void (*callback_error)(const PBC_Parser_Error *error);
+  void (*callback_error)(const PBCREP_Error *error);
 } Expect;
 
 typedef struct Test {
@@ -29,10 +29,12 @@ typedef struct TestInfo {
 } TestInfo;
 
 static void
-json_message_callback  (PBC_Parser             *parser,
+json_message_callback  (PBCREP_Parser             *parser,
                         const ProtobufCMessage *message,
                         void                   *callback_data)
 {
+  assert(pbcrep_parser_is_json (parser));
+
   TestInfo *ti = callback_data;
   assert(ti->expect_index < ti->test->n_expects);
   Expect *mt = ti->test->expects + ti->expect_index;
@@ -42,10 +44,12 @@ json_message_callback  (PBC_Parser             *parser,
 }
 
 static void
-json_message_error_callback   (PBC_Parser             *parser,
-                               const PBC_Parser_Error *error,
-                               void                   *callback_data)
+json_message_error_callback   (PBCREP_Parser      *parser,
+                               const PBCREP_Error *error,
+                               void               *callback_data)
 {
+  assert(pbcrep_parser_is_json (parser));
+
   TestInfo *ti = callback_data;
   assert(ti->expect_index < ti->test->n_expects);
   Expect *mt = ti->test->expects + ti->expect_index;
@@ -55,42 +59,43 @@ json_message_error_callback   (PBC_Parser             *parser,
   ti->got_error = true;
 }
 
-static PBC_ParserCallbacks callbacks =
-{
-  json_message_callback,
-  json_message_error_callback,
-  NULL
-};
+#define target_from_test_info(test_info) \
+  ((PBCREP_ParserTarget) { \
+    .message_callback = json_message_callback, \
+    .error_callback = json_message_error_callback, \
+    .callback_data = &(test_info), \
+    .destroy = NULL \
+  })
 
 static void
 test_stream_persons (Test *test, unsigned max_feed)
 {
-  PBC_Parser_JSONOptions json_options = PBC_PARSER_JSON_OPTIONS_INIT;
+  PBCREP_Parser_JSONOptions json_options = PBCREP_PARSER_JSON_OPTIONS_INIT;
   TestInfo state = { test, 0, false };
-  PBC_Parser *parser = pbc_parser_new_json (&foo__person__descriptor,
+  PBCREP_Parser *parser = pbcrep_parser_new_json (&foo__person__descriptor,
                                             &json_options,
-                                            &callbacks, &state);
+                                            target_from_test_info(state));
   unsigned test_json_len = strlen (test->json);
   unsigned amt_fed = 0;
   while (amt_fed < test_json_len)
     {
       unsigned amt = MIN (test_json_len - amt_fed, max_feed);
-      if (!pbc_parser_feed (parser, amt, (const uint8_t *) test->json + amt_fed))
+      if (!pbcrep_parser_feed (parser, amt, (const uint8_t *) test->json + amt_fed))
         {
           assert(state.got_error);
           assert(state.expect_index == test->n_expects);
-          pbc_parser_destroy (parser);
+          pbcrep_parser_destroy (parser);
           return;
         }
       amt_fed += amt;
     }
-  if (!pbc_parser_end_feed (parser))
+  if (!pbcrep_parser_end_feed (parser))
     {
       assert(state.got_error);
       assert(state.expect_index == test->n_expects);
       return;
     }
-  pbc_parser_destroy (parser);
+  pbcrep_parser_destroy (parser);
 }
 
 #define IS_PERSON(msg) \

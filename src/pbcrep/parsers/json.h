@@ -1,38 +1,39 @@
-#ifndef __PBC_PARSER_JSON_H_
-#define __PBC_PARSER_JSON_H_
+#ifndef __PBCREP_H_
+#error only include pbcrep.h
+#endif
 
-typedef struct PBC_Parser_JSONOptions PBC_Parser_JSONOptions;
-
-#include "../parser.h"
+typedef struct PBCREP_Parser_JSONOptions PBCREP_Parser_JSONOptions;
 
 typedef enum
 {
-  PBC_JSON_DIALECT_JSON = 0,            // the default, of course
-  PBC_JSON_DIALECT_JSON5                // see http://json5.org/
-} PBC_JSON_Dialect;
+  PBCREP_JSON_DIALECT_JSON = 0,            // the default, of course
+  PBCREP_JSON_DIALECT_JSON5                // see http://json5.org/
+} PBCREP_JSON_Dialect;
 
-struct PBC_Parser_JSONOptions {
+struct PBCREP_Parser_JSONOptions {
   // max nesting level for objects/arrays
   unsigned max_stack_depth;
 
-  PBC_JSON_Dialect json_dialect;
+  PBCREP_JSON_Dialect json_dialect;
 
   size_t estimated_message_size;
 };
 
-#define PBC_PARSER_JSON_OPTIONS_INIT                                 \
-  (PBC_Parser_JSONOptions) {                                         \
+#define PBCREP_PARSER_JSON_OPTIONS_INIT                              \
+  (PBCREP_Parser_JSONOptions) {                                      \
     64,                     /* max_stack_depth */                    \
-    PBC_JSON_DIALECT_JSON,                                           \
+    PBCREP_JSON_DIALECT_JSON,                                        \
     512                     /* estimated_message_size */             \
   }
 
 
 
 // === Streaming Record-Reader API ===
-PBC_Parser       *pbc_parser_new_json   (const ProtobufCMessageDescriptor  *message_desc,
-                                         const PBC_Parser_JSONOptions*json_options,
-                                         PBC_ParserCallbacks         *callbacks,
-                                         void                        *callback_data);
+PBCREP_Parser *
+pbcrep_parser_new_json  (const ProtobufCMessageDescriptor  *message_desc,
+                         const PBCREP_Parser_JSONOptions*json_options,
+                         PBCREP_ParserTarget         target);
 
-#endif
+
+bool
+pbcrep_parser_is_json   (PBCREP_Parser *parser);
