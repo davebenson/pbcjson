@@ -17,9 +17,11 @@
 /* Various parsers. */
 #include "pbcrep/parsers/json.h"
 #include "pbcrep/parsers/length-prefixed.h"
+#include "pbcrep/parsers/columnar.h"
 
 /* Various printers. */
 #include "pbcrep/printers/json.h"
 #include "pbcrep/printers/length-prefixed.h"
+#include "pbcrep/printers/columnar.h"
 
 #endif
