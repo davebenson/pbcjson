@@ -72,5 +72,5 @@ struct PBCREP_Printer
 PBCREP_Printer *pbcrep_printer_create_protected
                                (const ProtobufCMessageDescriptor*message_desc,
                                 size_t                       printer_size,
-                                PBCREP_PrinterTarget        *target);
+                                PBCREP_PrinterTarget         target);
 

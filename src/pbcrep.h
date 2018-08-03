@@ -14,6 +14,15 @@
 #include "pbcrep/parser.h"
 #include "pbcrep/printer.h"
 
+PBCREP_Printer *pbcrep_printer_new (const char *rep_str_spec,
+                                    ProtobufCMessageDescriptor *desc,
+                                    PBCREP_PrinterTarget target,
+                                    PBCREP_Error     **error);
+PBCREP_Parser  *pbcrep_parser_new  (const char      *rep_str_spec,
+                                    ProtobufCMessageDescriptor *desc,
+                                    PBCREP_ParserTarget target,
+                                    PBCREP_Error     **error);
+
 /* Various parsers. */
 #include "pbcrep/parsers/json.h"
 #include "pbcrep/parsers/length-prefixed.h"

@@ -2,6 +2,16 @@
 typedef struct PBCREP_Parser  PBCREP_Parser;
 #define PBCREP_PARSER_MAGIC_VALUE 0xa0119afa
 
+/** PBCREP_ParserTarget:
+ *
+ * This described the callbacks that'll be run on behalf
+ * with the parsed data.
+ *
+ * Usually, these callbacks are pointing to the same client that is
+ * pushing the data into the parser!
+ *
+ */
+
 typedef struct {
   void (*message_callback) (PBCREP_Parser          *parser,
                             const ProtobufCMessage *message,
