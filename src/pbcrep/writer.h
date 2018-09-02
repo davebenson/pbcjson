@@ -1,5 +1,10 @@
+
 typedef struct PBCREP_BinaryDataWriter PBCREP_BinaryDataWriter;
 typedef struct PBCREP_Writer PBCREP_Writer;
+
+typedef bool (*PBCREP_BinaryDataCallback) (size_t     max_length,
+                                           uint8_t   *data,
+                                           void      *callback_data);
 
 struct PBCREP_BinaryDataWriter
 {

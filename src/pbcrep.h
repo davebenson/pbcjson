@@ -71,7 +71,7 @@ PBCREP_TransferResult pbcrep_transfer_messages (PBCREP_Reader *input,
 /* Various parsers. */
 #include "pbcrep/parsers/json.h"
 #include "pbcrep/parsers/length-prefixed.h"
-#include "pbcrep/parsers/tabular.h"
+#include "pbcrep/parsers/columnar.h"
 
 /* Various printers. */
 #include "pbcrep/printers/json.h"

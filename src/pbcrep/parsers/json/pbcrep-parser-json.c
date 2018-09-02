@@ -4,6 +4,13 @@
 #include <string.h>
 #include <stdio.h>//DEBUG
 
+#if 1
+#define DEBUG(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define DEBUG(...) 
+#endif
+
+
 static inline size_t
 sizeof_field_from_type (ProtobufCType type)
 {
@@ -32,8 +39,6 @@ sizeof_field_from_type (ProtobufCType type)
 }
 #define REPEATED_VALUE_ARRAY_CHUNK_SIZE     512
 
-#define IS_POWER_OF_TWO_OR_ZERO(x)  ((x) & ((x) - 1))
-
 typedef struct RepeatedValueArrayList RepeatedValueArrayList;
 struct RepeatedValueArrayList {
   RepeatedValueArrayList *next;
@@ -52,8 +57,10 @@ struct Slab
   size_t size;
   Slab *next;
 };
-
-#define SLAB_GET_DATA(slab)   ((uint8_t *) ((slab) + 1))
+static inline uint8_t *slab_get_data(Slab *slab)
+{
+  return (uint8_t *) ((slab) + 1);
+}
 
 
 typedef struct PBCREP_Parser_JSON PBCREP_Parser_JSON;
@@ -106,7 +113,7 @@ parser_alloc_slow_case (PBCREP_Parser_JSON *parser,
       parser->slab_ring = parser->slab_ring->next;
     }
 
-  void *rv = SLAB_GET_DATA (parser->slab_ring);
+  void *rv = slab_get_data (parser->slab_ring);
   parser->slab_used = size;
   return rv;
 }
@@ -120,7 +127,7 @@ parser_alloc (PBCREP_Parser_JSON *parser,
   parser->slab_used &= ~(align - 1);
   if (parser->slab_used + size <= parser->slab_ring->size)
     {
-      void *rv = SLAB_GET_DATA (parser->slab_ring) + parser->slab_used;
+      void *rv = slab_get_data (parser->slab_ring) + parser->slab_used;
       parser->slab_used += size;
       return rv;
     }
@@ -193,6 +200,7 @@ parser_allocate_value_from_repeated_value_pool
 static bool
 json__start_object   (void *callback_data)
 {
+  DEBUG("json: start_object");
   PBCREP_Parser_JSON *p = callback_data;
   if (p->skip_depth > 0)
     {
@@ -235,6 +243,7 @@ json__start_object   (void *callback_data)
 static bool
 json__end_object     (void *callback_data)
 {
+  DEBUG("json: end_object");
   PBCREP_Parser_JSON *p = callback_data;
   if (p->skip_depth > 0)
     {
@@ -255,6 +264,7 @@ static bool
 json__start_array    (void *callback_data)
 {
   PBCREP_Parser_JSON *p = callback_data;
+  DEBUG("json: start_array: skip_depth=%u\n", p->skip_depth);
   if (p->skip_depth > 0)
     {
       p->skip_depth++;
@@ -286,6 +296,7 @@ static bool
 json__end_array      (void *callback_data)
 {
   PBCREP_Parser_JSON *p = callback_data;
+  DEBUG("json: end_array\n");
   if (p->skip_depth > 0)
     {
       p->skip_depth -= 1;
@@ -369,7 +380,7 @@ json__object_key     (unsigned key_length,
 {
   PBCREP_Parser_JSON *p = callback_data;
   (void) key_length;
-  fprintf(stderr, "object_key: key=%s\n",key);
+  DEBUG("json: object_key=%s\n", key);
   if (p->skip_depth > 0)
     {
       /* skip_depth==1 implies that we just got an unknown object key.
@@ -571,6 +582,7 @@ json__number_value   (unsigned number_length,
                       void *callback_data)
 {
   PBCREP_Parser_JSON *p = callback_data;
+  DEBUG("json: number_value=%s\n", number);
   (void) number_length;
   if (p->skip_depth > 0)
     {
@@ -582,11 +594,16 @@ json__number_value   (unsigned number_length,
 
   PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   const ProtobufCFieldDescriptor *f = s->field_desc;
+  assert (f != NULL);
   void *value = prepare_flat_value (p);
 
   if (!parse_number_to_value (p, number, f, value))
     return false;
-  s->field_desc = NULL;
+
+  // TODO: justify this in a comment slightly better. */
+  if (s->field_desc->label != PROTOBUF_C_LABEL_REPEATED)
+    s->field_desc = NULL;
+
   return true;
 }
 
@@ -785,6 +802,7 @@ json__string_value   (unsigned string_length,
                       void *callback_data)
 {
   PBCREP_Parser_JSON *p = callback_data;
+  DEBUG("json: string_value=%s\n", string);
   if (p->skip_depth > 0)
     {
       if (p->skip_depth == 1)
@@ -795,6 +813,7 @@ json__string_value   (unsigned string_length,
   assert(p->stack_depth > 0);
   PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   const ProtobufCFieldDescriptor *f = s->field_desc;
+  assert (f != NULL);
   void *value = prepare_flat_value (p);
 
   if (!parse_string_to_value (p, string_length, string, f, value))
@@ -808,6 +827,7 @@ json__boolean_value  (int boolean_value,
                       void *callback_data)
 {
   PBCREP_Parser_JSON *p = callback_data;
+  DEBUG("json: boolean_value=%d\n",boolean_value);
   if (p->skip_depth > 0)
     {
       if (p->skip_depth == 1)
@@ -896,6 +916,7 @@ static bool
 json__null_value     (void *callback_data)
 {
   PBCREP_Parser_JSON *p = callback_data;
+  DEBUG("json: null value\n");
   if (p->skip_depth > 0)
     {
       if (p->skip_depth == 1)
@@ -950,6 +971,7 @@ json__error          (const JSON_CallbackParser_ErrorInfo *error,
     .error_code_str = error->code_str,
     .error_message = error->message
   };
+  DEBUG("json: error: %s\n", error->message);
   PBCREP_Parser_JSON *p = callback_data;
   p->base.target.error_callback (&p->base, &e, p->base.target.callback_data);
 }
