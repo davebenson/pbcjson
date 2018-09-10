@@ -7,47 +7,94 @@
 #define PBCREP_SUPPORTS_STDIO 1
 #include <stdio.h>
 
-/* Include structures common to the printers and parsers. */
-#include "pbcrep/error.h"
+/* --- enums --- */
 
-/* Define the interfaces for parsing and printing. */
+/* How to destroy a "FILE *" argument from standard-io.  */
+typedef enum
+{
+  PBCREP_STDIO_CLOSE_METHOD_NONE,               // close method is a no-op
+  PBCREP_STDIO_CLOSE_METHOD_FCLOSE,             // call fclose()
+  PBCREP_STDIO_CLOSE_METHOD_PCLOSE              // call pclose()
+} PBCREP_StdioCloseMethod;
+
+/* Include structures common to the printers and parsers. */
+#include "pbcrep/feature-macros.h"
+#include "pbcrep/inline.h"
+#include "pbcrep/error.h"
+#include "pbcrep/buffer.h"
+
+/* ****************************
+ * Define the interfaces for parsing and printing.
+ * **************************** */
+
+/* --- lowest level --- */
+/* Parsers convert binary-data into streams of messages. */
 #include "pbcrep/parser.h"
+/* Printers convert messages into binary-data. */
 #include "pbcrep/printer.h"
 
+// binary data handling
+#include "pbcrep/binary-data-reader.h"
+#include "pbcrep/binary-data-writer.h"
+
+// message-based record-driven files
 #include "pbcrep/reader.h"
 #include "pbcrep/writer.h"
 
-PBCREP_Parser  *pbcrep_try_make_parser (const char      *rep_str_spec,
+// Parsers convert binary-data -> messages.
+// Printers convert messages -> binary data.
+
+PBCREP_Parser  *pbcrep_try_make_parser  (const char                       *rep_str_spec,
                                          const ProtobufCMessageDescriptor *desc,
-                                         PBCREP_ParserTarget target,
-                                         PBCREP_Error     **error);
-PBCREP_Parser  *pbcrep_make_parser      (const char      *rep_str_spec,
+                                         PBCREP_Error                    **error);
+PBCREP_Parser  *pbcrep_make_parser      (const char                       *rep_str_spec,
+                                         const ProtobufCMessageDescriptor *desc);
+PBCREP_Printer *pbcrep_try_make_printer (const char                       *rep_str_spec,
                                          const ProtobufCMessageDescriptor *desc,
-                                         PBCREP_ParserTarget target);
-PBCREP_Printer *pbcrep_try_make_printer (const char *rep_str_spec,
-                                         const ProtobufCMessageDescriptor *desc,
-                                         PBCREP_PrinterTarget target,
-                                         PBCREP_Error     **error);
-PBCREP_Printer *pbcrep_make_printer     (const char *rep_str_spec,
-                                         const ProtobufCMessageDescriptor *desc,
-                                         PBCREP_PrinterTarget target);
+                                         PBCREP_Error                    **error);
+PBCREP_Printer *pbcrep_make_printer     (const char                       *rep_str_spec,
+                                         const ProtobufCMessageDescriptor *desc);
 
 
 
-PBCREP_Reader  *pbcrep_try_file_reader  (const char *filename,
+PBCREP_Reader  *pbcrep_try_file_reader  (const char                       *filename,
                                          const ProtobufCMessageDescriptor *desc,
-                                         const char *repstr,
-                                         PBCREP_Error     **error);
-PBCREP_Reader  *pbcrep_make_file_reader (const char *filename,
+                                         const char                       *repstr,
+                                         PBCREP_Error                    **error);
+PBCREP_Reader  *pbcrep_make_file_reader (const char                       *filename,
+                                         const ProtobufCMessageDescriptor *desc,
+                                         const char                       *repstr);
+PBCREP_Writer  *pbcrep_try_file_writer  (const char                       *filename,
+                                         const ProtobufCMessageDescriptor *desc,
+                                         const char                       *repstr,
+                                         PBCREP_Error                    **error);
+PBCREP_Writer  *pbcrep_make_file_writer (const char                       *filename,
+                                         const ProtobufCMessageDescriptor *desc,
+                                         const char                       *repstr);
+
+
+/*
+ * Single-Message File Reader/Writer.
+EXPECTED_STRUCTURED_VALUE *
+ */
+ProtobufCMessage *pbcrep_message_from_file(const char *filename,
                                          const ProtobufCMessageDescriptor *desc,
                                          const char *repstr);
-PBCREP_Writer  *pbcrep_try_file_writer  (const char *filename,
+ProtobufCMessage *pbcrep_try_message_from_file
+                                        (const char *filename,
                                          const ProtobufCMessageDescriptor *desc,
                                          const char *repstr,
-                                         PBCREP_Error     **error);
-PBCREP_Writer  *pbcrep_make_file_writer (const char *filename,
+                                         PBCREP_Error **error);
+void            pbcrep_free_message_from_file (ProtobufCMessage *message);
+void            pbcrep_message_to_file  (const char *filename,
                                          const ProtobufCMessageDescriptor *desc,
                                          const char *repstr);
+bool            pbcrep_try_message_to_file
+                                        (const char *filename,
+                                         const ProtobufCMessage *message,
+                                         const char *repstr,
+                                         PBCREP_Error **error);
+
 
 typedef enum {
   PBCREP_TRANSFER_RESULT_SUCCESS,

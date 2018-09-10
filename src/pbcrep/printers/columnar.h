@@ -21,11 +21,9 @@ typedef struct PBCREP_PrinterColumnarConfig PBCREP_PrinterColumnarConfig;
 typedef struct PBCREP_RawColumnarPrinter PBCREP_RawColumnarPrinter;
 
 PBCREP_Printer *pbcrep_printer_new_tabsep (ProtobufCMessageDescriptor *desc,
-                                           bool                 header,
-                                           PBCREP_PrinterTarget target);
+                                           bool                 header);
 PBCREP_Printer *pbcrep_printer_new_csv    (ProtobufCMessageDescriptor *desc,
-                                           bool                 header,
-                                           PBCREP_PrinterTarget target);
+                                           bool                 header);
 
 
 PBCREP_PrinterColumnarConfig *

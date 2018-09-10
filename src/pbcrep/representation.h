@@ -22,22 +22,6 @@ typedef struct PBCREP_ParserFactory PBCREP_ParserFactory;
 typedef struct PBCREP_PrinterFactory PBCREP_PrinterFactory;
 typedef struct PBCREP_Representation PBCREP_Representation;
 
-struct PBCREP_ParserFactory
-{
-  const ProtobufCMessageDescriptor *descriptor;
-  PBCREP_Parser *(*make_parser)(PBCREP_ParserFactory *factory,
-                                PBCREP_ParserTarget target);
-  void (*destroy)(PBCREP_ParserFactory *factory);
-};
-
-struct PBCREP_PrinterFactory
-{
-  const ProtobufCMessageDescriptor *descriptor;
-  PBCREP_Printer *(*make_printer)(PBCREP_PrinterFactory *factory,
-                                PBCREP_PrinterTarget target);
-  void (*destroy)(PBCREP_PrinterFactory *factory);
-};
-
 struct PBCREP_Representation
 {
   PBCREP_ParserFactory *

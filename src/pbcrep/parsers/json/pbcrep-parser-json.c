@@ -1,10 +1,77 @@
+/*
+ * Callback-driven message parser (from JSON).
+ *
+ * We have a Stack of messages,
+ * only used for fields that are themselves messages.
+ *
+ * --- "Labels" [required v optional v repeated]
+ *
+ * REPEATED fields are the most complex to deal with.
+ * We maintain a stack of "slabs", which we reverse
+ * at the last moment.
+ *
+ *    - the Stack element has a tricky prickly list of RepeatedValueArrayList
+ *       - when the open bracket (start_array) the rep_list_backward
+ *         is initialized.
+ *
+ * OPTIONAL fields are pretty simple.
+ *    - When we parse an optional field with quantifier_offset,
+ *      we set the quantifier to TRUE.
+ *
+ * REQUIRED fields are the simplest, b/c there's never a quantifier.
+ *
+ * --- JSON
+ *
+ * The various primitive (aka unstructured or scalar types)
+ * values:  boolean, null, string, number are mapped into protobuf types
+ * as much as possible, or an error is given.
+ *
+ * Objects in JSON are only used here to designate messages.
+ * Currently we are NOT strict about required values.
+ *
+ * Arrays in JSON are only used here to map to repeated fields.
+ * Conversely, repeated fields MUST be encapsulated in an array;
+ * it is a parse error to receive a non-array value.
+ *
+ * --- Memory allocation
+ *
+ * We perhaps over-optimize, but shrug.
+ * Hopefully we're not "the root of all evil", at least.
+ *
+ * Each message we return to the user is embedded in a MessageContainer.
+ * The point of this structure is to provide a "high-water mark" for memory
+ * allocation.  So, whenever a message requires more memory than any prior
+ * message using the container, we allocate it on a "trash stack",
+ * keeping track of how much memory we needed to avoid allocation.
+ *
+ * When a message is finished, we look to see if it required the trash-stack,
+ * and if so, we delete all the recyclable MessageContainers, since they
+ * are no longer the right size.
+ *
+ * This gets stored in the Parser, and when a MessageContainer is
+ * recycled and it is smaller than the value in the parser,
+ * the slab will be resized (via free and malloc) ----
+ * 
+ *     * ...
+ *
+ * We use an overly complex scheme for handling repeated fields;
+ * perhaps a simply power-of-two resizing array would be easier.
+ *     * ...
+ *
+ * ---
+ *
+ * Error handling
+ *
+ * ---
+ *
+ */
 #include "json-cb-parser.h"
 #include "../../../pbcrep.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>//DEBUG
 
-#if 1
+#if 0
 #define DEBUG(...) fprintf(stderr, __VA_ARGS__)
 #else
 #define DEBUG(...) 
@@ -40,6 +107,7 @@ sizeof_field_from_type (ProtobufCType type)
 #define REPEATED_VALUE_ARRAY_CHUNK_SIZE     512
 
 typedef struct RepeatedValueArrayList RepeatedValueArrayList;
+typedef struct MessageContainer MessageContainer;
 struct RepeatedValueArrayList {
   RepeatedValueArrayList *next;
 };
@@ -49,18 +117,9 @@ typedef struct PBCREP_Parser_JSON_Stack {
   ProtobufCMessage *message;  // contains field corresponding to field_desc
   RepeatedValueArrayList *rep_list_backward;
   size_t n_repeated_values;
+  bool got_start_array;
 } PBCREP_Parser_JSON_Stack;
 
-typedef struct Slab Slab;
-struct Slab
-{
-  size_t size;
-  Slab *next;
-};
-static inline uint8_t *slab_get_data(Slab *slab)
-{
-  return (uint8_t *) ((slab) + 1);
-}
 
 
 typedef struct PBCREP_Parser_JSON PBCREP_Parser_JSON;
@@ -79,16 +138,35 @@ struct PBCREP_Parser_JSON {
   // then it skipping is over and skip_depth is set to 0.
   unsigned skip_depth;
 
-  Slab *slab_ring;
-  size_t slab_used;
-  Slab *cur_first;
+  MessageContainer *in_progress;
 
-  const char * error_code;
-  const char * error_message;
+  MessageContainer *first_message;
+  MessageContainer *last_message;
+
+  MessageContainer *message_container_recycling_list;
 
   RepeatedValueArrayList *recycled_repeated_nodes;
 };
 
+struct TrashNode
+{
+  TrashNode *next;
+};
+
+struct MessageContainer
+{
+  size_t total_size_aligned;
+  size_t reusable_slab_used;
+  char *reusable_slab;
+  MessageContainer *queue_next;
+  TrashNode *trash_stack;
+  ProtobufCMessage message;             // extra space follows message!  must be last member
+}
+
+
+////// XXX fix this
+/* Allocate memory from the slab-ring,
+ * when a real allocation is necessary. */
 static void *
 parser_alloc_slow_case (PBCREP_Parser_JSON *parser,
                         size_t           size)
@@ -118,6 +196,13 @@ parser_alloc_slow_case (PBCREP_Parser_JSON *parser,
   return rv;
 }
 
+/* Allocate memory from the slab-ring.
+ *
+ * Should be incredibly fast.
+ *
+ * There is no "parser_free", instead all parser-allocations are freed en masse
+ * by parser_allocator_reset().
+ */
 static inline void *
 parser_alloc (PBCREP_Parser_JSON *parser,
               size_t              size,
@@ -177,30 +262,87 @@ parser_allocate_value_from_repeated_value_pool
   RepeatedValueArrayList *list;
   if (cur_slab_n == 0)
     {
-      if (parser->recycled_repeated_nodes != NULL)
-        {
-          list = parser->recycled_repeated_nodes;
-          parser->recycled_repeated_nodes->next = list->next;
-        }
-      else
-        {
-          list = malloc (sizeof(RepeatedValueArrayList)
-                       + REPEATED_VALUE_ARRAY_CHUNK_SIZE);
-        }
+      list = parser_allocate_repeated_value_array_list_node (parser);
       list->next = s->rep_list_backward;
       s->rep_list_backward = list;
     }
   else
-    list = s->rep_list_backward;
+    {
+      list = s->rep_list_backward;
+    }
   uint8_t *rv = (uint8_t *) (list + 1) + size_bytes * cur_slab_n;
   s->n_repeated_values += 1;
   return rv;
 }
 
+static void *
+prepare_for_value (PBCREP_Parser_JSON *p,
+                   PBCREP_Error      **error)
+{
+  PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
+  const ProtobufCFieldDescriptor *f = s->field_desc;
+  void *member = (char *) s->message + f->offset;
+  void *qmember = (char *) s->message + f->quantifier_offset;
+  size_t sizeof_member = sizeof_field_from_type (f->type);
+  void *value = member;
+  if (f->label == PROTOBUF_C_LABEL_REPEATED)
+    {
+      if (s->got_start_array)
+        {
+          value = parser_allocate_value_from_repeated_value_pool (p, sizeof_member);
+        }
+      else
+#if 0
+        {
+          // single unrepeated value
+          * (size_t *) qmember = 1;
+          * (void **) member = value = parser_alloc (p, sizeof_member, sizeof_member);
+        }
+#else
+        {
+          *error = pbcrep_error_new ("EXPECTED_LEFT_BRACKET",
+                                     "got flat value (string, number, boolean etc) for repeated value");
+          return NULL;
+        }
+#endif
+
+    }
+  else if (f->label == PROTOBUF_C_LABEL_OPTIONAL)
+    {
+      // XXX: quantifier_offset==0 for optional strings etc,
+      // but we don't normally guarantee that.
+      // Nonetheless, this will work fine,
+      // since the message-descriptor is at offset=0.
+      if (f->quantifier_offset > 0)
+        * (protobuf_c_boolean *) qmember = 1;
+    }
+  return value;
+}
+
+static bool
+done_with_value (PBCREP_Parser_JSON *p, PBCREP_Parser_JSON_Stack *s)
+{
+  // so far, p is unused
+  (void) p;
+
+  if (s->field_desc->label == PROTOBUF_C_LABEL_REPEATED)
+    {
+      // must increase quantifier
+      size_t *quantifier = (size_t *) ((char *) s->message + s->field_desc->quantifier_offset);
+      *quantifier += 1;
+    }
+  else
+    {
+      // TODO: justify this in a comment slightly better. */
+      s->field_desc = NULL;
+    }
+  return true;
+}
+
 static bool
 json__start_object   (void *callback_data)
 {
-  DEBUG("json: start_object");
+  DEBUG("json: start_object\n");
   PBCREP_Parser_JSON *p = callback_data;
   if (p->skip_depth > 0)
     {
@@ -212,10 +354,11 @@ json__start_object   (void *callback_data)
       parser_allocator_reset (p);
       p->stack[0].message = parser_alloc (p, p->base.message_desc->sizeof_message, 8);
       protobuf_c_message_init (p->base.message_desc, p->stack[0].message);
-      fprintf(stderr, "ALLOCATED MESSAGE %p at stack depth 0 named %s\n", p->stack[0].message, p->base.message_desc->name);
+      DEBUG("ALLOCATED MESSAGE %p at stack depth 0 named %s\n", p->stack[0].message, p->base.message_desc->name);
       p->stack[0].field_desc = NULL;
       p->stack[0].rep_list_backward = NULL;
       p->stack[0].n_repeated_values = 0;
+      p->stack[0].got_start_array = false;
       p->stack_depth = 1;
     }
   else
@@ -223,18 +366,40 @@ json__start_object   (void *callback_data)
       PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
       if (s->field_desc->type != PROTOBUF_C_TYPE_MESSAGE)
         {
-          p->error_code = "OBJECT_NOT_ALLOWED_FOR_FIELD";
-          p->error_message = "Only Message Fields may be stored as objects";
+          PBCREP_Error error = {
+            .error_code_str = "OBJECT_NOT_ALLOWED_FOR_FIELD",
+            .error_message = "Only Message Fields may be stored as objects",
+          };
+          p->base.target.error_callback (&p->base,
+                                         &error,
+                                         p->base.target.callback_data);
           return false;
+        }
+      if (s->field_desc->label == PROTOBUF_C_LABEL_REPEATED)
+        {
+          if (!s->got_start_array)
+            {
+              PBCREP_Error error = {
+                .error_code_str = "EXPECTED_LEFT_BRACKET",
+                .error_message = "got object instead of array for repeated value",
+              };
+              p->base.target.error_callback (&p->base,
+                                             &error,
+                                             p->base.target.callback_data);
+              return false;
+            }
         }
       const ProtobufCMessageDescriptor *md = s->field_desc->descriptor;
       s[1].message = parser_alloc (p, p->base.message_desc->sizeof_message, 8);
-      fprintf(stderr, "ALLOCATED MESSAGE %p at stack depth %u (%s)\n", s[1].message, p->stack_depth, md->name);
+      DEBUG("ALLOCATED MESSAGE %p at stack depth %u (%s)\n", s[1].message, p->stack_depth, md->name);
       protobuf_c_message_init (md, s[1].message);
       s[1].field_desc = NULL;
       s[1].n_repeated_values = 0;
       s[1].rep_list_backward = NULL;
-      * (ProtobufCMessage **) ((char*)s[0].message + s[0].field_desc->offset) = s[1].message;
+      s[1].got_start_array = false;
+      ProtobufCMessage **pmessage = prepare_for_value (p);
+      *pmessage = s[1].message;
+      done_with_value (p, s);
       p->stack_depth += 1;
     }
   return true;
@@ -243,7 +408,7 @@ json__start_object   (void *callback_data)
 static bool
 json__end_object     (void *callback_data)
 {
-  DEBUG("json: end_object");
+  DEBUG("json: end_object\n");
   PBCREP_Parser_JSON *p = callback_data;
   if (p->skip_depth > 0)
     {
@@ -272,24 +437,41 @@ json__start_array    (void *callback_data)
     }
   if (p->stack_depth == 0)
     {
-      p->error_code = "ARRAY_NOT_ALLOWED_AT_TOPLEVEL";
-      p->error_message = "Toplevel JSON object must not be array";
+      PBCREP_Error error = {
+        .error_code_str = "ARRAY_NOT_ALLOWED_AT_TOPLEVEL",
+        .error_message = "Toplevel JSON object must not be array",
+      }; 
+      p->base.target.error_callback (&p->base,
+                                     &error,
+                                     p->base.target.callback_data);
       return false;
     }
-  else if (p->stack[p->stack_depth-1].field_desc->label != PROTOBUF_C_LABEL_REPEATED)
+  PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
+  if (s->got_start_array)
     {
-      p->error_code = "NOT_A_REPEATED_FIELD";
-      p->error_message = "Arrays are only allowed for repeated fields";
+      PBCREP_Error error = {
+        .error_code_str = "NESTED_ARRAY",
+        .error_message = "Arrays erroreously nested",
+      }; 
+      p->base.target.error_callback (&p->base,
+                                     &error,
+                                     p->base.target.callback_data);
       return false;
     }
-  else
+  if (s->field_desc->label != PROTOBUF_C_LABEL_REPEATED)
     {
-      PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
-      s->rep_list_backward = parser_allocate_repeated_value_array_list_node (p);
-      s->rep_list_backward->next = NULL;
-      s->n_repeated_values = 0;
-      return true;
+      PBCREP_Error error = {
+        .error_code_str = "NOT_A_REPEATED_FIELD",
+        .error_message = "Arrays are only allowed for repeated fields",
+      }; 
+      p->base.target.error_callback (&p->base,
+                                     &error,
+                                     p->base.target.callback_data);
+      return false;
     }
+
+  s->got_start_array = true;
+  return true;
 }
 
 static bool
@@ -305,6 +487,10 @@ json__end_array      (void *callback_data)
       return true;
     }
   PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
+
+  assert (s->got_start_array);
+  s->got_start_array = false;
+
   const ProtobufCFieldDescriptor *f = s->field_desc;
   assert(f != NULL);
   assert(f->label == PROTOBUF_C_LABEL_REPEATED);
@@ -360,6 +546,7 @@ json__end_array      (void *callback_data)
           // recycle node to a per-parser list
           parser_free_repeated_value_array_list_node (p, at);
         }
+      s->rep_list_backward = NULL;
     }
 
   // write the final partial RepeatedValueArrayList
@@ -369,6 +556,7 @@ json__end_array      (void *callback_data)
       parser_free_repeated_value_array_list_node (p, partial);
     }
   s->field_desc = NULL;
+  s->n_repeated_values = 0;
 
   return true;
 }
@@ -394,7 +582,7 @@ json__object_key     (unsigned key_length,
   PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   ProtobufCMessage *message = s->message;
   const ProtobufCMessageDescriptor *msg_desc = message->descriptor;
-  fprintf(stderr, "looking for field %s in message %p desc %p\n", key, message, msg_desc);
+  DEBUG("looking for field %s in message %p desc %p\n", key, message, msg_desc);
   assert(msg_desc->magic == PROTOBUF_C__MESSAGE_DESCRIPTOR_MAGIC);
   assert (s->field_desc == NULL);
   const ProtobufCFieldDescriptor *field_desc = protobuf_c_message_descriptor_get_field_by_name (msg_desc, key);
@@ -404,42 +592,8 @@ json__object_key     (unsigned key_length,
       return true;
     }
   s->field_desc = field_desc;
-  fprintf(stderr, "field_desc: name=%s offset=%u qoffset=%u type=%u label=%u\n",field_desc->name, field_desc->offset, field_desc->quantifier_offset, field_desc->type, field_desc->label);
+  DEBUG("field_desc: name=%s offset=%u qoffset=%u type=%u label=%u\n",field_desc->name, field_desc->offset, field_desc->quantifier_offset, field_desc->type, field_desc->label);
   return true;
-}
-
-static void *
-prepare_flat_value (PBCREP_Parser_JSON *p)
-{
-  PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
-  const ProtobufCFieldDescriptor *f = s->field_desc;
-  void *member = (char *) s->message + f->offset;
-  void *qmember = (char *) s->message + f->quantifier_offset;
-  size_t sizeof_member = sizeof_field_from_type (f->type);
-  void *value = member;
-  if (f->label == PROTOBUF_C_LABEL_REPEATED)
-    {
-      if (s->rep_list_backward != NULL)
-        {
-          value = parser_allocate_value_from_repeated_value_pool (p, sizeof_member);
-        }
-      else
-        {
-          // single unrepeated value
-          * (size_t *) qmember = 1;
-          * (void **) member = value = parser_alloc (p, sizeof_member, sizeof_member);
-        }
-    }
-  else if (f->label == PROTOBUF_C_LABEL_OPTIONAL)
-    {
-      // XXX: quantifier_offset==0 for optional strings etc,
-      // but we don't normally guarantee that.
-      // Nonetheless, this will work fine,
-      // since the message-descriptor is at offset=0.
-      if (f->quantifier_offset > 0)
-        * (protobuf_c_boolean *) qmember = 1;
-    }
-  return value;
 }
 
 static bool
@@ -595,14 +749,15 @@ json__number_value   (unsigned number_length,
   PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   const ProtobufCFieldDescriptor *f = s->field_desc;
   assert (f != NULL);
-  void *value = prepare_flat_value (p);
+  void *value = prepare_for_value (p);
+  if (value == NULL)
+    return false;
 
   if (!parse_number_to_value (p, number, f, value))
     return false;
 
-  // TODO: justify this in a comment slightly better. */
-  if (s->field_desc->label != PROTOBUF_C_LABEL_REPEATED)
-    s->field_desc = NULL;
+  if (!done_with_value (p, s))
+    return false;
 
   return true;
 }
@@ -814,11 +969,14 @@ json__string_value   (unsigned string_length,
   PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   const ProtobufCFieldDescriptor *f = s->field_desc;
   assert (f != NULL);
-  void *value = prepare_flat_value (p);
+  void *value = prepare_for_value (p);
+  if (value == NULL)
+    return false;
 
   if (!parse_string_to_value (p, string_length, string, f, value))
     return false;
-  s->field_desc = NULL;
+  if (!done_with_value (p, s))
+    return false;
   return true;
 }
 
