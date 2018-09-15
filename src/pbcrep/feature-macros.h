@@ -13,3 +13,6 @@
 #ifndef PBCREP_GNUC_PRINTF                /* fallback: no compiler hint */
 # define PBCREP_GNUC_PRINTF( format_idx, arg_idx )
 #endif
+
+#define PBCREP_LIKELY(condition)      (condition)
+#define PBCREP_UNLIKELY(condition)    (condition)

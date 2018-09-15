@@ -31,8 +31,7 @@ typedef enum
 //
 PBCREP_Parser *pbcrep_parser_new_length_prefixed
                                  (PBCREP_LengthPrefixed_Format lp_format,
-                                  const ProtobufCMessageDescriptor *desc,
-                                  PBCREP_ParserTarget       target);
+                                  const ProtobufCMessageDescriptor *desc);
 
 
 //

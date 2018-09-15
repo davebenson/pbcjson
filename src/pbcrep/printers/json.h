@@ -10,7 +10,6 @@ struct PBCREP_JSON_PrinterOptions
 };
 
 PBCREP_Printer *pbcrep_printer_new_json (ProtobufCMessageDescriptor *desc,
-                                         PBCREP_JSON_PrinterOptions *options,
-                                         PBCREP_PrinterTarget        target);
+                                         PBCREP_JSON_PrinterOptions *options);
 
 

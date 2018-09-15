@@ -11,7 +11,13 @@ typedef struct PBCREP_Error {
   // And yes, this 'code' is all uppercase and underscores (for JSON at least)
   const char *error_code_str;
 
-  // may be NULL
-  const char *error_message_extra;
+  unsigned free_message : 1;
 } PBCREP_Error;
 
+
+PBCREP_Error *pbcrep_error_new         (const char *code,
+                                        const char *message);
+PBCREP_Error *pbcrep_error_new_printf  (const char *code,
+                                        const char *message,
+                                        ...) PBCREP_GNUC_PRINTF(2,3);
+void          pbcrep_error_destroy     (PBCREP_Error *error);

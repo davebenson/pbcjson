@@ -34,7 +34,7 @@ struct PBCREP_Parser {
                      PBCREP_Error   **error);
   bool  (*advance)  (PBCREP_Parser   *parser,
                      PBCREP_Error   **error);
-  void  (*destroy)  (PBCREP_Parser   *parser);
+  void  (*destruct) (PBCREP_Parser   *parser);
 };
 
 PBCREP_Parser *

@@ -77,6 +77,9 @@
 #define DEBUG(...) 
 #endif
 
+#define INITIAL_REUSABLE_SLAB_SIZE 256
+
+#define MESSAGE_ALIGN   8
 
 static inline size_t
 sizeof_field_from_type (ProtobufCType type)
@@ -127,6 +130,7 @@ struct PBCREP_Parser_JSON {
   PBCREP_Parser base;
 
   JSON_CallbackParser *json_parser;
+  PBCREP_Error *error;
 
   unsigned stack_depth;
   unsigned max_stack_depth;
@@ -145,55 +149,60 @@ struct PBCREP_Parser_JSON {
 
   MessageContainer *message_container_recycling_list;
 
+  size_t reusable_slab_size;
+
   RepeatedValueArrayList *recycled_repeated_nodes;
 };
 
-struct TrashNode
+static inline void
+maybe_set_error (PBCREP_Parser_JSON *p, const char *code, const char *msg)
 {
-  TrashNode *next;
+  if (p->error == NULL)
+    p->error = pbcrep_error_new (code, msg);
+}
+
+typedef struct ExtraAllocationListNode ExtraAllocationListNode;
+struct ExtraAllocationListNode
+{
+  // XXX: make need padding if alignment is greater than alignment of pointer.
+  // This can probably only happen is sizeof(void*) < alignof(double).
+  ExtraAllocationListNode *next;
 };
 
 struct MessageContainer
 {
-  size_t total_size_aligned;
-  size_t reusable_slab_used;
+  size_t used;
+  size_t reusable_slab_size;
   char *reusable_slab;
+  ExtraAllocationListNode *extra_list;
   MessageContainer *queue_next;
-  TrashNode *trash_stack;
   ProtobufCMessage message;             // extra space follows message!  must be last member
+};
+
+static void
+free_message_container (MessageContainer *mc)
+{
+  ExtraAllocationListNode *extra = mc->extra_list;
+  while (extra != NULL)
+    {
+      ExtraAllocationListNode *next = extra->next;
+      free (extra);
+      extra = next;
+    }
+  free (mc->reusable_slab);
+  free (mc);
 }
 
-
-////// XXX fix this
 /* Allocate memory from the slab-ring,
  * when a real allocation is necessary. */
 static void *
-parser_alloc_slow_case (PBCREP_Parser_JSON *parser,
-                        size_t           size)
+extra_allocation  (MessageContainer *mc,
+                   size_t           size)
 {
-  // do we need a new slab?
-  if (parser->slab_ring->next == parser->cur_first
-   || parser->slab_ring->next->size < size)
-    {
-      // allocate a new slab
-      size *= 3;
-      size += ((1<<10)-1);
-      size &= ~((1<<10)-1);
-      Slab *slab = malloc (sizeof (Slab) + size);
-      slab->next = parser->slab_ring->next;
-      parser->slab_ring->next = slab;
-      parser->slab_ring = slab;
-    }
-  else
-    {
-      // Move to next recycled slab,
-      // which we checked above was sufficiently large.
-      parser->slab_ring = parser->slab_ring->next;
-    }
-
-  void *rv = slab_get_data (parser->slab_ring);
-  parser->slab_used = size;
-  return rv;
+  ExtraAllocationListNode *n = malloc (sizeof (ExtraAllocationListNode) + size);
+  n->next = mc->extra_list;
+  mc->extra_list = n;
+  return (void *) (n + 1);
 }
 
 /* Allocate memory from the slab-ring.
@@ -204,27 +213,18 @@ parser_alloc_slow_case (PBCREP_Parser_JSON *parser,
  * by parser_allocator_reset().
  */
 static inline void *
-parser_alloc (PBCREP_Parser_JSON *parser,
+parser_alloc (MessageContainer   *mc,
               size_t              size,
               size_t              align)
 {
-  parser->slab_used += align - 1;
-  parser->slab_used &= ~(align - 1);
-  if (parser->slab_used + size <= parser->slab_ring->size)
-    {
-      void *rv = slab_get_data (parser->slab_ring) + parser->slab_used;
-      parser->slab_used += size;
-      return rv;
-    }
-  else
-    return parser_alloc_slow_case (parser, size);
-}
-
-static void
-parser_allocator_reset (PBCREP_Parser_JSON *parser)
-{
-  parser->cur_first = parser->slab_ring;
-  parser->slab_used = 0;
+  mc->used += align - 1;
+  mc->used &= ~(align - 1);
+  size_t new_used = mc->used + size;
+  void *rv = PBCREP_LIKELY (new_used <= mc->reusable_slab_size)
+           ? (mc->reusable_slab + mc->used)
+           : extra_allocation (mc, size);
+  mc->used = new_used;
+  return rv;
 }
 
 static inline RepeatedValueArrayList *
@@ -276,8 +276,7 @@ parser_allocate_value_from_repeated_value_pool
 }
 
 static void *
-prepare_for_value (PBCREP_Parser_JSON *p,
-                   PBCREP_Error      **error)
+prepare_for_value (PBCREP_Parser_JSON *p)
 {
   PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   const ProtobufCFieldDescriptor *f = s->field_desc;
@@ -300,8 +299,9 @@ prepare_for_value (PBCREP_Parser_JSON *p,
         }
 #else
         {
-          *error = pbcrep_error_new ("EXPECTED_LEFT_BRACKET",
-                                     "got flat value (string, number, boolean etc) for repeated value");
+          maybe_set_error (p,
+                           "EXPECTED_LEFT_BRACKET",
+                           "got flat value (string, number, boolean etc) for repeated value");
           return NULL;
         }
 #endif
@@ -351,8 +351,30 @@ json__start_object   (void *callback_data)
     }
   if (p->stack_depth == 0)
     {
-      parser_allocator_reset (p);
-      p->stack[0].message = parser_alloc (p, p->base.message_desc->sizeof_message, 8);
+      // Allocate a MessageContainer.
+      MessageContainer *mc = p->message_container_recycling_list;
+      if (mc == NULL)
+        {
+          size_t extra_size = p->base.message_desc->sizeof_message - sizeof (ProtobufCMessage);
+          mc = malloc (sizeof (MessageContainer) + extra_size);
+          mc->reusable_slab_size = p->reusable_slab_size;
+          mc->reusable_slab = malloc (p->reusable_slab_size);
+        }
+      else
+        {
+          p->message_container_recycling_list = mc->queue_next;
+          if (PBCREP_UNLIKELY(mc->reusable_slab_size != p->reusable_slab_size))
+            {
+              free (mc->reusable_slab);
+              mc->reusable_slab_size = p->reusable_slab_size;
+              mc->reusable_slab = malloc (p->reusable_slab_size);
+            }
+        }
+      mc->used = 0;
+      mc->extra_list = NULL;
+      p->in_progress = mc;
+
+      p->stack[0].message = &mc->message;
       protobuf_c_message_init (p->base.message_desc, p->stack[0].message);
       DEBUG("ALLOCATED MESSAGE %p at stack depth 0 named %s\n", p->stack[0].message, p->base.message_desc->name);
       p->stack[0].field_desc = NULL;
@@ -366,31 +388,23 @@ json__start_object   (void *callback_data)
       PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
       if (s->field_desc->type != PROTOBUF_C_TYPE_MESSAGE)
         {
-          PBCREP_Error error = {
-            .error_code_str = "OBJECT_NOT_ALLOWED_FOR_FIELD",
-            .error_message = "Only Message Fields may be stored as objects",
-          };
-          p->base.target.error_callback (&p->base,
-                                         &error,
-                                         p->base.target.callback_data);
+          maybe_set_error (p,
+                           "OBJECT_NOT_ALLOWED_FOR_FIELD",
+                           "Only Message Fields may be stored as objects");
           return false;
         }
       if (s->field_desc->label == PROTOBUF_C_LABEL_REPEATED)
         {
           if (!s->got_start_array)
             {
-              PBCREP_Error error = {
-                .error_code_str = "EXPECTED_LEFT_BRACKET",
-                .error_message = "got object instead of array for repeated value",
-              };
-              p->base.target.error_callback (&p->base,
-                                             &error,
-                                             p->base.target.callback_data);
+              maybe_set_error (p,
+                               "EXPECTED_LEFT_BRACKET",
+                               "got object instead of array for repeated value");
               return false;
             }
         }
       const ProtobufCMessageDescriptor *md = s->field_desc->descriptor;
-      s[1].message = parser_alloc (p, p->base.message_desc->sizeof_message, 8);
+      s[1].message = parser_alloc (p->in_progress, md->sizeof_message, MESSAGE_ALIGN);
       DEBUG("ALLOCATED MESSAGE %p at stack depth %u (%s)\n", s[1].message, p->stack_depth, md->name);
       protobuf_c_message_init (md, s[1].message);
       s[1].field_desc = NULL;
@@ -421,7 +435,15 @@ json__end_object     (void *callback_data)
   s->field_desc = NULL;
   --(p->stack_depth);
   if (p->stack_depth == 0)
-    p->base.target.message_callback (&p->base, p->stack[0].message, p->base.target.callback_data);
+    {
+      MessageContainer *mc = p->in_progress;
+      p->in_progress = NULL;
+      if (p->last_message == NULL)
+        p->first_message = mc;
+      else
+        p->last_message->queue_next = mc;
+      p->last_message = mc;
+    }
   return true;
 }
 
@@ -437,36 +459,24 @@ json__start_array    (void *callback_data)
     }
   if (p->stack_depth == 0)
     {
-      PBCREP_Error error = {
-        .error_code_str = "ARRAY_NOT_ALLOWED_AT_TOPLEVEL",
-        .error_message = "Toplevel JSON object must not be array",
-      }; 
-      p->base.target.error_callback (&p->base,
-                                     &error,
-                                     p->base.target.callback_data);
+      maybe_set_error (p,
+                       "ARRAY_NOT_ALLOWED_AT_TOPLEVEL",
+                       "Toplevel JSON object must not be array");
       return false;
     }
   PBCREP_Parser_JSON_Stack *s = p->stack + p->stack_depth - 1;
   if (s->got_start_array)
     {
-      PBCREP_Error error = {
-        .error_code_str = "NESTED_ARRAY",
-        .error_message = "Arrays erroreously nested",
-      }; 
-      p->base.target.error_callback (&p->base,
-                                     &error,
-                                     p->base.target.callback_data);
+      maybe_set_error (p,
+                       "NESTED_ARRAY",
+                       "Arrays erroreously nested");
       return false;
     }
   if (s->field_desc->label != PROTOBUF_C_LABEL_REPEATED)
     {
-      PBCREP_Error error = {
-        .error_code_str = "NOT_A_REPEATED_FIELD",
-        .error_message = "Arrays are only allowed for repeated fields",
-      }; 
-      p->base.target.error_callback (&p->base,
-                                     &error,
-                                     p->base.target.callback_data);
+      maybe_set_error (p,
+                       "NOT_A_REPEATED_FIELD",
+                       "Arrays are only allowed for repeated fields");
       return false;
     }
 
@@ -503,7 +513,7 @@ json__end_array      (void *callback_data)
   size_t sizeof_elt = sizeof_field_from_type (f->type);
 
   // contiguous array (the final array)
-  uint8_t *contig_array = parser_alloc (p, s->n_repeated_values * sizeof_elt, sizeof_elt);
+  uint8_t *contig_array = parser_alloc (p->in_progress, s->n_repeated_values * sizeof_elt, sizeof_elt);
   * (void **) member = contig_array;
 
   // output pointer into contig_array
@@ -680,13 +690,9 @@ parse_number_to_value (PBCREP_Parser_JSON *p,
         const ProtobufCEnumValue *ev = protobuf_c_enum_descriptor_get_value (ed, v);
         if (ev == NULL)
           {
-            PBCREP_Error error = {
-              .error_code_str = "BAD_ENUM_NUMERIC_VALUE",
-              .error_message = "Unknown enum value given as number"
-            }; 
-            p->base.target.error_callback (&p->base,
-                                           &error,
-                                           p->base.target.callback_data);
+            maybe_set_error (p,
+                             "BAD_ENUM_NUMERIC_VALUE",
+                             "Unknown enum value given as number");
             return false;
           }
         * (uint32_t *) value_out = v;
@@ -694,39 +700,34 @@ parse_number_to_value (PBCREP_Parser_JSON *p,
       }
 
     case PROTOBUF_C_TYPE_STRING:
-      * (char **) value_out = strcpy (parser_alloc (p, strlen (number) + 1, 1), number);
+      * (char **) value_out = strcpy (parser_alloc (p->in_progress, strlen (number) + 1, 1), number);
       return true;
 
     case PROTOBUF_C_TYPE_BYTES:
       {
-        PBCREP_Error error = {
-          .error_code_str = "BAD_VALUE_FOR_BYTES",
-          .error_message = "Bytes field cannot be initialized with a number"
-        }; 
-        p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
+        maybe_set_error (p,
+            "BAD_VALUE_FOR_BYTES",
+            "Bytes field cannot be initialized with a number"
+          );
         return false;
       }
 
     case PROTOBUF_C_TYPE_MESSAGE:
       {
-        PBCREP_Error error = {
-          .error_code_str = "BAD_VALUE_FOR_MESSAGE",
-          .error_message = "Message field cannot be initialized with a number"
-        }; 
-        p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
+        maybe_set_error (p,
+            "BAD_VALUE_FOR_MESSAGE",
+            "Message field cannot be initialized with a number"
+          );
         return false;
       }
     }
   return false;
 
 bad_number:
-  {
-    PBCREP_Error error = {
-      .error_code_str = "BAD_NUMBER",
-      .error_message = "Numeric value doesn't match Protobuf type"
-    }; 
-    p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
-  }
+  maybe_set_error (p,
+      "BAD_NUMBER",
+      "Numeric value doesn't match Protobuf type"
+    );
   return false;
 }
 
@@ -869,11 +870,10 @@ parse_string_to_value (PBCREP_Parser_JSON *p,
         const ProtobufCEnumValue *ev = protobuf_c_enum_descriptor_get_value_by_name (ed, string);
         if (ev == NULL)
           {
-            PBCREP_Error error = {
-              .error_code_str = "BAD_ENUM_STRING_VALUE",
-              .error_message = "Unknown enum value given as string"
-            }; 
-            p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
+            maybe_set_error (p,
+                "BAD_ENUM_STRING_VALUE",
+                "Unknown enum value given as string"
+              );
             return false;
           }
         * (uint32_t *) value_out = ev->value;
@@ -882,7 +882,7 @@ parse_string_to_value (PBCREP_Parser_JSON *p,
 
     case PROTOBUF_C_TYPE_STRING:
       {
-        char *rv = parser_alloc (p, string_length + 1, 1);
+        char *rv = parser_alloc (p->in_progress, string_length + 1, 1);
         memcpy (rv, string, string_length + 1);
         * (char **) value_out = rv;
         return true;
@@ -892,7 +892,7 @@ parse_string_to_value (PBCREP_Parser_JSON *p,
       {
         ProtobufCBinaryData *bd = value_out;
         bd->len = 0;
-        bd->data = parser_alloc (p, string_length / 2, 1);
+        bd->data = parser_alloc (p->in_progress, string_length / 2, 1);
         const char *end = string + string_length;
         const char *at = string;
         while (at < end)
@@ -905,21 +905,13 @@ parse_string_to_value (PBCREP_Parser_JSON *p,
                     at++;
                     continue;
                   }
-                PBCREP_Error error = {
-                  .error_code_str = "UNEXPECTED_CHAR",
-                  .error_message = "only hex-digits and whitespace allowed"
-                };
-                p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
+                maybe_set_error (p, "BAD_HEX", "only hex-digits and whitespace allowed");
                 return false;
               }
             int h2 = hexdigit_value(at[1]);
             if (h2 < 0)
               {
-                PBCREP_Error error = {
-                  .error_code_str = "BAD_HEX",
-                  .error_message = "bad hex digit"
-                };
-                p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
+                maybe_set_error (p, "BAD_HEX", "bad hex digit");
                 return false;
               }
             bd->data[bd->len++] = (h<<4) | h2;
@@ -930,24 +922,18 @@ parse_string_to_value (PBCREP_Parser_JSON *p,
 
     case PROTOBUF_C_TYPE_MESSAGE:
       {
-        PBCREP_Error error = {
-          .error_code_str = "BAD_VALUE_FOR_MESSAGE",
-          .error_message = "Message field cannot be initialized with a number"
-        }; 
-        p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
+        maybe_set_error (p,
+           "BAD_VALUE_FOR_MESSAGE",
+           "Message field cannot be initialized with a number");
         return false;
       }
     }
   return false;
 
 bad_number:
-  {
-    PBCREP_Error error = {
-      .error_code_str = "BAD_NUMBER",
-      .error_message = "Numeric value doesn't match Protobuf type"
-    }; 
-    p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
-  }
+  maybe_set_error (p,
+       "BAD_NUMBER",
+       "Numeric value doesn't match Protobuf type");
   return false;
 }
 
@@ -1033,11 +1019,9 @@ json__boolean_value  (int boolean_value,
 
     case PROTOBUF_C_TYPE_ENUM:
       {
-        PBCREP_Error error = {
-          .error_code_str = "BAD_ENUM",
-          .error_message = "Enum may not be given as boolean",
-        }; 
-        p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
+        maybe_set_error (p,
+           "BAD_ENUM",
+           "Enum may not be given as boolean");
         return false;
       }
 
@@ -1048,21 +1032,17 @@ json__boolean_value  (int boolean_value,
 
     case PROTOBUF_C_TYPE_BYTES:
       {
-        PBCREP_Error error = {
-          .error_code_str = "BAD_VALUE_FOR_BYTES",
-          .error_message = "Message field cannot be initialized with a boolean"
-        }; 
-        p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
+        maybe_set_error (p,
+           "BAD_VALUE_FOR_BYTES",
+           "Message field cannot be initialized with a boolean");
         return false;
       }
 
     case PROTOBUF_C_TYPE_MESSAGE:
       {
-        PBCREP_Error error = {
-          .error_code_str = "BAD_VALUE_FOR_MESSAGE",
-          .error_message = "Message field cannot be initialized with a boolean"
-        }; 
-        p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
+        maybe_set_error (p,
+           "BAD_VALUE_FOR_MESSAGE",
+           "Message field cannot be initialized with a boolean");
         return false;
       }
     }
@@ -1110,11 +1090,9 @@ json__null_value     (void *callback_data)
 
     case PROTOBUF_C_LABEL_REQUIRED:
       {
-        PBCREP_Error error = {
-          .error_code_str = "NULL_NOT_ALLOWED",
-          .error_message = "null not allowed for required field"
-        };
-        p->base.target.error_callback (&p->base, &error, p->base.target.callback_data);
+        maybe_set_error (p,
+           "NULL_NOT_ALLOWED",
+           "null not allowed for required field");
         return false;
       }
     }
@@ -1125,13 +1103,11 @@ static void
 json__error          (const JSON_CallbackParser_ErrorInfo *error,
                       void *callback_data)
 {
-  PBCREP_Error e = {
-    .error_code_str = error->code_str,
-    .error_message = error->message
-  };
   DEBUG("json: error: %s\n", error->message);
   PBCREP_Parser_JSON *p = callback_data;
-  p->base.target.error_callback (&p->base, &e, p->base.target.callback_data);
+  maybe_set_error (p,
+                   error->code_str,
+                   error->message);
 }
 
 #define json__destroy NULL
@@ -1141,22 +1117,41 @@ static JSON_Callbacks json_callbacks = JSON_CALLBACKS_DEF(json__, );
 
 static bool
 pbc_parser_json_feed (PBCREP_Parser      *parser,
-                      size_t           data_length,
-                      const uint8_t   *data)
+                      size_t              data_length,
+                      const uint8_t      *data,
+                      PBCREP_Error      **error)
 {
   PBCREP_Parser_JSON *p = (PBCREP_Parser_JSON *) parser;
-  return json_callback_parser_feed (p->json_parser, data_length, data);
+  if (json_callback_parser_feed (p->json_parser, data_length, data))
+    {
+      assert (p->error == NULL);
+      return true;
+    }
+  assert (p->error != NULL);
+  *error = p->error;
+  p->error = NULL;
+  return false;
 }
 
 static bool
-pbc_parser_json_end_feed (PBCREP_Parser      *parser)
+pbc_parser_json_end_feed (PBCREP_Parser      *parser,
+                          PBCREP_Error      **error)
 {
   PBCREP_Parser_JSON *p = (PBCREP_Parser_JSON *) parser;
-  return json_callback_parser_end_feed (p->json_parser);
+  if (json_callback_parser_end_feed (p->json_parser))
+    {
+      assert (p->error == NULL);
+      return true;
+    }
+  assert (p->error != NULL);
+  *error = p->error;
+  p->error = NULL;
+  return false;
+
 }
 
 static void
-pbc_parser_json_destroy  (PBCREP_Parser      *parser)
+pbc_parser_json_destruct (PBCREP_Parser      *parser)
 {
   PBCREP_Parser_JSON *p = (PBCREP_Parser_JSON *) parser;
   json_callback_parser_destroy (p->json_parser);
@@ -1170,16 +1165,15 @@ pbc_parser_json_destroy  (PBCREP_Parser      *parser)
           free (kill);
         }
     }
-  Slab *at = p->slab_ring->next;
-  p->slab_ring->next = NULL;
 
-  Slab *builtin_slab = (Slab *) (p->stack + p->max_stack_depth);
-  while (at != NULL)
+  if (p->in_progress)
+    free_message_container (p->in_progress);
+
+  while (p->first_message != NULL)
     {
-      Slab *next = at->next;
-      if (at != builtin_slab)
-        free (at);
-      at = next;
+      MessageContainer *mc = p->first_message->queue_next;
+      free_message_container (p->first_message);
+      p->first_message = mc;
     }
 
   while (p->recycled_repeated_nodes != NULL)
@@ -1188,16 +1182,18 @@ pbc_parser_json_destroy  (PBCREP_Parser      *parser)
       p->recycled_repeated_nodes = kill->next;
       free (kill);
     }
+
+  /* The parser itself, and any objects allocated by pbcrep_parser_create_protected()
+   * will be freed in pbcrep_parser_destroy().
+   */
 }
 
 PBCREP_Parser *
 pbcrep_parser_new_json  (const ProtobufCMessageDescriptor  *message_desc,
-                         const PBCREP_Parser_JSONOptions   *json_options,
-                         PBCREP_ParserTarget                target)
+                         const PBCREP_Parser_JSONOptions   *json_options)
 {
   size_t size = sizeof (PBCREP_Parser_JSON)
               + sizeof (PBCREP_Parser_JSON_Stack) * json_options->max_stack_depth
-              + sizeof (Slab)
               + json_options->estimated_message_size;
 
   JSON_CallbackParser_Options cb_parser_options;
@@ -1213,8 +1209,7 @@ pbcrep_parser_new_json  (const ProtobufCMessageDescriptor  *message_desc,
         return NULL;
     }
 
-  PBCREP_Parser *parser = pbcrep_parser_create_protected (message_desc, size,
-                                                          target);
+  PBCREP_Parser *parser = pbcrep_parser_create_protected (message_desc, size);
   PBCREP_Parser_JSON *p = (PBCREP_Parser_JSON *) parser;
   p->json_parser = json_callback_parser_new (&json_callbacks,
                                              parser,
@@ -1222,7 +1217,10 @@ pbcrep_parser_new_json  (const ProtobufCMessageDescriptor  *message_desc,
 
   parser->feed = pbc_parser_json_feed;
   parser->end_feed = pbc_parser_json_end_feed;
-  parser->destroy = pbc_parser_json_destroy;
+  parser->destruct = pbc_parser_json_destruct;
+
+  p->error = NULL;
+  p->in_progress = p->first_message = p->last_message = NULL;
 
   /* If 1, we are in an unknown field of a known object type.
    * If >1, we are skipping and object/array-depth == skip_depth-1
@@ -1233,13 +1231,8 @@ pbcrep_parser_new_json  (const ProtobufCMessageDescriptor  *message_desc,
   p->max_stack_depth = json_options->max_stack_depth;
   p->stack = (PBCREP_Parser_JSON_Stack *) (p + 1);
 
-  p->cur_first = (Slab *) (p->stack + json_options->max_stack_depth);
-  p->slab_ring = p->cur_first;
-  p->slab_ring->next = p->slab_ring;
-  p->slab_used = 0;
-  p->error_code = NULL;
-  p->error_message = NULL;
   p->recycled_repeated_nodes = NULL;
+  p->reusable_slab_size = INITIAL_REUSABLE_SLAB_SIZE;
 
   return parser;
 } 

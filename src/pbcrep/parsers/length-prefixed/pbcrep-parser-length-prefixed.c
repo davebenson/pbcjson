@@ -35,8 +35,9 @@ PBCREP_LP_free (void *d, void *ptr)
  */
 static bool
 length_prefixed__feed     (PBCREP_Parser      *parser,
-                           size_t           data_length,
-                           const uint8_t   *data)
+                           size_t              data_length,
+                           const uint8_t      *data,
+                           PBCREP_Error      **error)
 {
   PBCREP_Parser_LengthPrefixed *lp = (PBCREP_Parser_LengthPrefixed*) parser;
   if (lp->in_length_prefix)
@@ -187,12 +188,10 @@ in_length_prefix:
         }
       if (lp->lenbuf_len == LENBUF_SIZE)
         {
-          PBCREP_Error error = {
+          *error = pbcrep_error_new (
             "BAD_B128",
-            "overlong or bad B128-encoded length-prefix",
-            NULL
-          };
-          parser->target.error_callback (parser, &error, parser->target.callback_data);
+            "overlong or bad B128-encoded length-prefix"
+          );
           return false;
         }
       lp->in_length_prefix = true;
@@ -223,12 +222,10 @@ in_length_prefix:
         }
       if (lp->lenbuf_len == LENBUF_SIZE)
         {
-          PBCREP_Error error = {
+          *error = pbcrep_error_new (
             "BAD_B128",
-            "overlong or bad B128-encoded big-endian length-prefix",
-            NULL
-          };
-          parser->target.error_callback (parser, &error, parser->target.callback_data);
+            "overlong or bad B128-encoded big-endian length-prefix"
+          );
           return false;
         }
       lp->in_length_prefix = true;
@@ -269,12 +266,10 @@ in_data:
       ProtobufCMessage *msg = protobuf_c_message_unpack(lp->base.message_desc, &allocator, lp->buf_length, lp->buf);
       if (msg == NULL)
         {
-          PBCREP_Error er = {
+          *error = pbcrep_error_new (
             "PROTOBUF_MALFORMED",
-            "Error unpacking Protocol Buffers message",
-            NULL
-          };
-          parser->target.error_callback (parser, &er, parser->target.callback_data);
+            "Error unpacking Protocol Buffers message"
+          );
           return false;
         }
 
@@ -291,35 +286,32 @@ in_data:
 }
 
 static bool
-length_prefixed__end_feed (PBCREP_Parser      *parser)
+length_prefixed__end_feed (PBCREP_Parser      *parser,
+                           PBCREP_Error      **error)
 {
   PBCREP_Parser_LengthPrefixed *lp = (PBCREP_Parser_LengthPrefixed*) parser;
   if (lp->in_length_prefix)
     {
       if (lp->lenbuf_len == 0)
         return true;
-      PBCREP_Error error = {
+      *error = pbcrep_error_new (
         "PARTIAL_RECORD",
-        "terminated in length-prefix itself",
-        NULL
-      };
-      parser->target.error_callback(parser, &error, parser->target.callback_data);
+        "terminated in length-prefix itself"
+      );
       return false;
     }
   else
     {
-      PBCREP_Error error = {
+      *error = pbcrep_error_new (
         "PARTIAL_RECORD",
-        "terminated in data body",
-        NULL
-      };
-      parser->target.error_callback(parser, &error, parser->target.callback_data);
+        "terminated in data body"
+      );
       return false;
     }
 }
 
 static void
-length_prefixed__destroy  (PBCREP_Parser      *parser)
+length_prefixed__destruct (PBCREP_Parser      *parser)
 {
   PBCREP_Parser_LengthPrefixed *lp = (PBCREP_Parser_LengthPrefixed*) parser;
   if (lp->buf != NULL)
@@ -328,12 +320,11 @@ length_prefixed__destroy  (PBCREP_Parser      *parser)
 
 PBCREP_Parser *
 pbcrep_parser_new_length_prefixed (PBCREP_LengthPrefixed_Format lp_format,
-                                   const ProtobufCMessageDescriptor *desc,
-                                   PBCREP_ParserTarget              target)
+                                   const ProtobufCMessageDescriptor *desc)
 {
   PBCREP_Parser *p;
   PBCREP_Parser_LengthPrefixed *lp;
-  p = pbcrep_parser_create_protected (desc, sizeof (PBCREP_Parser_LengthPrefixed), target);
+  p = pbcrep_parser_create_protected (desc, sizeof (PBCREP_Parser_LengthPrefixed));
   lp = (PBCREP_Parser_LengthPrefixed *) p;
 
   lp->lp_format = lp_format;
@@ -342,7 +333,7 @@ pbcrep_parser_new_length_prefixed (PBCREP_LengthPrefixed_Format lp_format,
   lp->buf_alloced = 0;
   lp->buf_length = 0;
   lp->buf = NULL;
-  lp->base.destroy = length_prefixed__destroy;
+  lp->base.destruct = length_prefixed__destruct;
   lp->base.feed = length_prefixed__feed;
   lp->base.end_feed = length_prefixed__end_feed;
   return p;

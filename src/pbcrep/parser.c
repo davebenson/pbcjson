@@ -5,22 +5,22 @@
 bool
 pbcrep_parser_feed       (PBCREP_Parser               *parser,
                           size_t                       data_length,
-                          const uint8_t               *data)
+                          const uint8_t               *data,
+                          PBCREP_Error               **error)
 {
-  return parser->feed(parser, data_length, data);
+  return parser->feed(parser, data_length, data, error);
 }
 bool
-pbcrep_parser_end_feed   (PBCREP_Parser               *parser)
+pbcrep_parser_end_feed   (PBCREP_Parser               *parser,
+                          PBCREP_Error               **error)
 {
-  return parser->end_feed(parser);
+  return parser->end_feed(parser, error);
 }
 void
 pbcrep_parser_destroy    (PBCREP_Parser               *parser)
 {
-  parser->destroy(parser);
-
-  if (parser->target.destroy != NULL)
-    parser->target.destroy (parser, parser->target.callback_data);
+  if (parser->destruct != NULL)
+    parser->destruct(parser);
 
   // Now, undo any work done by
   // pbc_parser_create_protected().
@@ -29,8 +29,7 @@ pbcrep_parser_destroy    (PBCREP_Parser               *parser)
 
 PBCREP_Parser *
 pbcrep_parser_create_protected (const ProtobufCMessageDescriptor*message_desc,
-                                size_t                       parser_size,
-                                PBCREP_ParserTarget          target)
+                                size_t                       parser_size)
 {
   assert(parser_size >= sizeof(struct PBCREP_Parser));
   PBCREP_Parser *rv = malloc (parser_size);
@@ -38,10 +37,9 @@ pbcrep_parser_create_protected (const ProtobufCMessageDescriptor*message_desc,
   rv->parser_magic = PBCREP_PARSER_MAGIC_VALUE;
   rv->content_type = PBCREP_PARSER_CONTENT_TYPE_ANY;
   rv->message_desc = message_desc;
-  rv->target = target;
   rv->feed = NULL;
   rv->end_feed = NULL;
-  rv->destroy = pbcrep_parser_destroy;
+  rv->destruct = NULL;
   return rv;
 }
 

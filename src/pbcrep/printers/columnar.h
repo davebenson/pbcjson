@@ -47,28 +47,25 @@ struct PBCREP_RawColumnarPrinter {
   bool (*begin_print)(PBCREP_RawColumnarPrinter *printer,
                       size_t                     n_fields,
                       char                     **field_names,
-                      PBCREP_PrinterTarget      *target,
                       PBCREP_Error             **error);
   bool (*print)      (PBCREP_RawColumnarPrinter *printer,
-                      PBCREP_PrinterTarget      *target,
                       size_t                     n_field,
                       char                     **field_values,
                       PBCREP_Error             **error);
   bool (*end_print)  (PBCREP_RawColumnarPrinter *printer,
                       size_t                     n_fields,
                       char                     **field_names,
-                      PBCREP_PrinterTarget      *target,
                       PBCREP_Error             **error);
   void (*destroy)    (PBCREP_RawColumnarPrinter *printer);
-  
-  // For our use-case the target is instead the PBCREP_Printer.
+
+  PBCREP_Buffer *target;
 };
 
 PBCREP_RawColumnarPrinter *pbcrep_raw_columnar_printer_new_tabsep
-                                        (PBCREP_PrinterTarget *target,
+                                        (PBCREP_Buffer        *target_buffer,
                                          bool                  print_header);
 PBCREP_RawColumnarPrinter *pbcrep_raw_columnar_printer_new_csv
-                                        (PBCREP_PrinterTarget *target,
+                                        (PBCREP_Buffer        *target_buffer,
                                          bool                  print_header);
 
 

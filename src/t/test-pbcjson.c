@@ -1,6 +1,7 @@
 #include "generated/test1.pb-c.h"
 #include "../pbcrep.h"
 #include <string.h>
+#include <stdio.h>
 
 #ifndef MIN
 #define MIN(a,b) (((a) < (b)) ? (a) : (b))
@@ -28,7 +29,8 @@ typedef struct TestInfo {
   bool got_error;
 } TestInfo;
 
-static void
+#if 0
+static bool
 json_message_callback  (PBCREP_Parser             *parser,
                         const ProtobufCMessage *message,
                         void                   *callback_data)
@@ -63,14 +65,7 @@ json_message_error_callback   (PBCREP_Parser      *parser,
   ti->expect_index++;
   ti->got_error = true;
 }
-
-#define target_from_test_info(test_info) \
-  ((PBCREP_ParserTarget) { \
-    .message_callback = json_message_callback, \
-    .error_callback = json_message_error_callback, \
-    .callback_data = &(test_info), \
-    .destroy = NULL \
-  })
+#endif
 
 static void
 test_stream_persons (Test *test, unsigned max_feed)
@@ -78,25 +73,25 @@ test_stream_persons (Test *test, unsigned max_feed)
   PBCREP_Parser_JSONOptions json_options = PBCREP_PARSER_JSON_OPTIONS_INIT;
   TestInfo state = { test, 0, false };
   PBCREP_Parser *parser = pbcrep_parser_new_json (&foo__person__descriptor,
-                                            &json_options,
-                                            target_from_test_info(state));
+                                                  &json_options);
   unsigned test_json_len = strlen (test->json);
   unsigned amt_fed = 0;
+  PBCREP_Error *error = NULL;
   while (amt_fed < test_json_len)
     {
       unsigned amt = MIN (test_json_len - amt_fed, max_feed);
-      if (!pbcrep_parser_feed (parser, amt, (const uint8_t *) test->json + amt_fed))
+      if (!pbcrep_parser_feed (parser, amt, (const uint8_t *) test->json + amt_fed, &error))
         {
-          assert(state.got_error);
-          assert(state.expect_index == test->n_expects);
+          assert (error != NULL);
+          assert (state.expect_index == test->n_expects);
           pbcrep_parser_destroy (parser);
           return;
         }
       amt_fed += amt;
     }
-  if (!pbcrep_parser_end_feed (parser))
+  if (!pbcrep_parser_end_feed (parser, &error))
     {
-      assert(state.got_error);
+      assert (error != NULL);
       assert(state.expect_index == test->n_expects);
       return;
     }
@@ -336,7 +331,14 @@ static unsigned test_sizes[] = {
 int main()
 {
   for (unsigned test_i = 0; test_i < N_ELEMENTS(all_tests); test_i++)
-    for (unsigned size_i = 0; size_i < N_ELEMENTS(test_sizes); size_i++)
-      test_stream_persons (all_tests[test_i], test_sizes[size_i]);
+    {
+      fprintf (stderr, "Test %s: ", all_tests[test_i]->json);
+      for (unsigned size_i = 0; size_i < N_ELEMENTS(test_sizes); size_i++)
+        {
+          fprintf (stderr, "[size=%u] ", (unsigned) test_sizes[size_i]);
+          test_stream_persons (all_tests[test_i], test_sizes[size_i]);
+        }
+      fprintf (stderr, " done.\n");
+    }
   return 0;
 }

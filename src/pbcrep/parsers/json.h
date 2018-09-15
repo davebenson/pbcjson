@@ -31,8 +31,7 @@ struct PBCREP_Parser_JSONOptions {
 // === Streaming Record-Reader API ===
 PBCREP_Parser *
 pbcrep_parser_new_json  (const ProtobufCMessageDescriptor  *message_desc,
-                         const PBCREP_Parser_JSONOptions*json_options,
-                         PBCREP_ParserTarget         target);
+                         const PBCREP_Parser_JSONOptions*json_options);
 
 
 bool
