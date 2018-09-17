@@ -10,15 +10,13 @@
 #define N_ELEMENTS(static_array) \
   (sizeof(static_array)/sizeof(static_array[0]))
 
-typedef struct Expect {
-  void (*callback_message)(const ProtobufCMessage *msg);
-  void (*callback_error)(const PBCREP_Error *error);
-} Expect;
+typedef void (*CheckMessageFunc)(const ProtobufCMessage *msg);
 
 typedef struct Test {
   const char *json;
-  unsigned n_expects;
-  Expect *expects;
+  unsigned n_messages;
+  CheckMessageFunc *message_checks;
+  void (*check_error)(const PBCREP_Error *error);
 } Test;
 
 
@@ -83,7 +81,9 @@ test_stream_persons (Test *test, unsigned max_feed)
       if (!pbcrep_parser_feed (parser, amt, (const uint8_t *) test->json + amt_fed, &error))
         {
           assert (error != NULL);
-          assert (state.expect_index == test->n_expects);
+          assert (state.expect_index == test->n_messages);
+          assert (test->check_error != NULL);
+          test->check_error (error);
           pbcrep_parser_destroy (parser);
           return;
         }
@@ -92,10 +92,13 @@ test_stream_persons (Test *test, unsigned max_feed)
   if (!pbcrep_parser_end_feed (parser, &error))
     {
       assert (error != NULL);
-      assert(state.expect_index == test->n_expects);
+      assert(state.expect_index == test->n_messages);
+      assert (test->check_error != NULL);
+      test->check_error (error);
       return;
     }
   pbcrep_parser_destroy (parser);
+  assert (test->check_error == NULL);
 }
 
 #define IS_PERSON(msg) \
@@ -138,13 +141,14 @@ static void basic_json__validate0(const ProtobufCMessage *msg)
   assert(person->test_ints[1] == 2);
   assert(person->test_ints[2] == 3);
 }
-static Expect basic_json__expects[1] = {
-  { basic_json__validate0, NULL }
+static CheckMessageFunc basic_json__message_checks[1] = {
+  basic_json__validate0
 };
 static Test basic_json__test = {
   basic_json__str,
-  N_ELEMENTS(basic_json__expects),
-  basic_json__expects
+  N_ELEMENTS(basic_json__message_checks),
+  basic_json__message_checks,
+  NULL
 };
 
 
@@ -269,13 +273,14 @@ static void long_int_array__validate0(const ProtobufCMessage *msg)
       v %= 10000000;
     }
 }
-static Expect long_int_array__expects[1] = {
-  { long_int_array__validate0, NULL }
+static CheckMessageFunc long_int_array__message_checks[1] = {
+  long_int_array__validate0
 };
 static Test long_int_array__test = {
   long_int_array__str,
-  N_ELEMENTS(long_int_array__expects),
-  long_int_array__expects
+  N_ELEMENTS(long_int_array__message_checks),
+  long_int_array__message_checks,
+  NULL
 };
 
 
@@ -287,33 +292,31 @@ static void empty_object__validate0(const ProtobufCMessage *msg)
   assert(IS_PERSON(msg));
   assert(person->n_test_ints == 0);
 }
-static Expect empty_object__expects[1] = {
-  { empty_object__validate0, NULL }
+static CheckMessageFunc empty_object__message_checks[1] = {
+  empty_object__validate0
 };
 static Test empty_object__test = {
   empty_object__str,
-  N_ELEMENTS(empty_object__expects),
-  empty_object__expects
+  N_ELEMENTS(empty_object__message_checks),
+  empty_object__message_checks,
+  NULL
 };
 
 
 #define DUMP_ERROR(error) \
   fprintf(stderr, "error->message=%s\nerror->code=%s\n", error->error_message, error->error_code_str)
 static const char fuck__str[] = "fuck";
-static void fuck__error0(const PBCREP_Error *error)
+static void fuck__check_error(const PBCREP_Error *error)
 {
   //DUMP_ERROR(error);
   // XXX: not as thought there's any spec.
   //      "Bad Character" would be just as good.
   assert(strcmp(error->error_code_str, "EXPECTED_STRUCTURED_VALUE") == 0);
 }
-static Expect fuck__expects[1] = {
-  { NULL, fuck__error0 },
-};
 static Test fuck__test = {
   fuck__str,
-  N_ELEMENTS(fuck__expects),
-  fuck__expects
+  0, NULL,
+  fuck__check_error
 };
 
 

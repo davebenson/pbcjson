@@ -125,4 +125,19 @@ PBCREP_TransferResult pbcrep_transfer_messages (PBCREP_Reader *input,
 #include "pbcrep/printers/length-prefixed.h"
 #include "pbcrep/printers/columnar.h"
 
+
+/* Allocator configuration */
+
+//
+// These are set to normal defaults (malloc and free).
+//
+// If you wish to set them, either manually or with pbcrep_setup_debug_allocator(),
+// you must do that before calling any other pbcrep function.
+// 
+extern void *(*pbcrep_malloc) (size_t size);
+extern void  (*pbcrep_free)   (void *allocation);
+
+
+// set malloc/free for debugging.
+void pbcrep_setup_debug_allocator(void);
 #endif
