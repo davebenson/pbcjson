@@ -6,7 +6,7 @@
 PBCREP_Error *pbcrep_error_new         (const char *code,
                                         const char *message)
 {
-  PBCREP_Error *e = malloc (sizeof (PBCREP_Error));
+  PBCREP_Error *e = pbcrep_malloc (sizeof (PBCREP_Error));
   e->error_message = message;
   e->error_code_str = code;
   e->free_message = 0;
@@ -24,7 +24,7 @@ pbcrep_error_new_printf  (const char *code,
   asprintf (&msg, message, args);
   va_end (args);
 
-  PBCREP_Error *e = malloc (sizeof (PBCREP_Error));
+  PBCREP_Error *e = pbcrep_malloc (sizeof (PBCREP_Error));
   e->error_message = msg;
   e->error_code_str = code;
   e->free_message = 1;
@@ -34,6 +34,6 @@ pbcrep_error_new_printf  (const char *code,
 void          pbcrep_error_destroy     (PBCREP_Error *error)
 {
   if (error->free_message)
-    free ((char*)(error->error_message));
-  free (error);
+    pbcrep_free ((char*)(error->error_message));
+  pbcrep_free (error);
 }

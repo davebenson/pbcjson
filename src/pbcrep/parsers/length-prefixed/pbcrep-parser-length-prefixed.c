@@ -21,13 +21,13 @@ static void *
 PBCREP_LP_alloc (void *d, size_t s)
 {
   (void) d;
-  return malloc (s);
+  return pbcrep_malloc (s);
 }
 static void
 PBCREP_LP_free (void *d, void *ptr)
 {
   (void) d;
-  free (ptr);
+  pbcrep_free (ptr);
 }
 
 /* TODO: optimize by providing different feed implementations for
@@ -249,7 +249,7 @@ in_data:
   if (lp->length_from_prefix > lp->buf_alloced)
     {
       lp->buf_alloced = lp->length_from_prefix;
-      lp->buf = realloc (lp->buf, lp->buf_alloced);
+      lp->buf = pbcrep_realloc (lp->buf, lp->buf_alloced);
     }
   if (lp->buf_length + data_length >= lp->length_from_prefix)
     {
@@ -315,7 +315,7 @@ length_prefixed__destruct (PBCREP_Parser      *parser)
 {
   PBCREP_Parser_LengthPrefixed *lp = (PBCREP_Parser_LengthPrefixed*) parser;
   if (lp->buf != NULL)
-    free (lp->buf);
+    pbcrep_free (lp->buf);
 }
 
 PBCREP_Parser *

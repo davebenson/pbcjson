@@ -19,12 +19,14 @@ pbcrep_parser_end_feed   (PBCREP_Parser               *parser,
 void
 pbcrep_parser_destroy    (PBCREP_Parser               *parser)
 {
+  assert (parser->parser_magic == PBCREP_PARSER_MAGIC_VALUE);
+
   if (parser->destruct != NULL)
     parser->destruct(parser);
 
   // Now, undo any work done by
   // pbc_parser_create_protected().
-  free (parser);
+  pbcrep_free (parser);
 }
 
 PBCREP_Parser *
@@ -32,7 +34,7 @@ pbcrep_parser_create_protected (const ProtobufCMessageDescriptor*message_desc,
                                 size_t                       parser_size)
 {
   assert(parser_size >= sizeof(struct PBCREP_Parser));
-  PBCREP_Parser *rv = malloc (parser_size);
+  PBCREP_Parser *rv = pbcrep_malloc (parser_size);
   assert(rv != NULL);
   rv->parser_magic = PBCREP_PARSER_MAGIC_VALUE;
   rv->content_type = PBCREP_PARSER_CONTENT_TYPE_ANY;

@@ -7,6 +7,8 @@ noinst_PROGRAMS = $(test_programs)
 noinst_LIBRARIES = libpbcrep.a
 libpbcrep_a_SOURCES = \
 src/pbcrep/parser.c \
+src/pbcrep/debug.c \
+src/pbcrep/pbcrep-allocator.c \
 src/pbcrep/parsers/length-prefixed/pbcrep-parser-length-prefixed.c \
 src/pbcrep/parsers/json/json-cb-parser.c \
 src/pbcrep/parsers/json/pbcrep-parser-json.c \

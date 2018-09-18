@@ -2,6 +2,7 @@
 #include "../pbcrep.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #ifndef MIN
 #define MIN(a,b) (((a) < (b)) ? (a) : (b))
@@ -331,8 +332,33 @@ static unsigned test_sizes[] = {
  1,2,3,4,5,9,11,13,20,2000
 };
 
-int main()
+static void
+usage (const char *prog_name)
 {
+  fprintf(stderr,
+    "usage: %s [-d]\n\n"
+    "Run the pbcjson tests.\n"
+    ,
+    prog_name
+  );
+  exit(1);
+}
+
+int main(int argc, char **argv)
+{
+  bool debug = false;
+  for (int i = 1; i < argc; i++)
+    {
+      if (strcmp (argv[i], "--debug") == 0
+       || strcmp (argv[i], "-d") == 0)
+        debug = true;
+      else
+        usage (argv[0]);
+    }
+  if (debug)
+    {
+      pbcrep_setup_debug_allocator ();
+    }
   for (unsigned test_i = 0; test_i < N_ELEMENTS(all_tests); test_i++)
     {
       fprintf (stderr, "Test %s: ", all_tests[test_i]->json);

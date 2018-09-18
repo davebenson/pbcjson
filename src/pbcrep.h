@@ -136,6 +136,7 @@ PBCREP_TransferResult pbcrep_transfer_messages (PBCREP_Reader *input,
 // 
 extern void *(*pbcrep_malloc) (size_t size);
 extern void  (*pbcrep_free)   (void *allocation);
+extern void *(*pbcrep_realloc)(void *ptr, size_t new_size);
 
 
 // set malloc/free for debugging.

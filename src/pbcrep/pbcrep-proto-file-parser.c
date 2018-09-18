@@ -41,7 +41,7 @@ clear_token (Token *to_clear)
       size_t i, N = to_clear->n_subtokens;
       for (i = 0; i < N; i++)
         clear_token (to_clear->subtokens + i);
-      free (to_clear->subtokens);
+      pbcrep_free (to_clear->subtokens);
       to_clear->n_subtokens = 0;
       to_clear->subtokens = NULL;
     }
@@ -58,7 +58,7 @@ static Token *scan_tokens (const char *filename,
   unsigned line_no = 1;
   const char *at = text;
   unsigned n_tokens = 16;
-  Token *tokens = malloc (sizeof (Token) * n_tokens);
+  Token *tokens = pbcrep_malloc (sizeof (Token) * n_tokens);
   while (at < end)
     {
       if (*at == ' ')
@@ -127,7 +127,7 @@ static Token *scan_tokens (const char *filename,
 error_cleanup:
   for (unsigned i = 0; i < n_tokens; i++)
     clear_token (tokens + i);
-  free (tokens);
+  pbcrep_free (tokens);
   return NULL;
 }
 

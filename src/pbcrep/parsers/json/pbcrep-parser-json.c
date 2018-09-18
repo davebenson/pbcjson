@@ -186,11 +186,11 @@ free_message_container (MessageContainer *mc)
   while (extra != NULL)
     {
       ExtraAllocationListNode *next = extra->next;
-      free (extra);
+      pbcrep_free (extra);
       extra = next;
     }
-  free (mc->reusable_slab);
-  free (mc);
+  pbcrep_free (mc->reusable_slab);
+  pbcrep_free (mc);
 }
 
 /* Allocate memory from the slab-ring,
@@ -199,7 +199,7 @@ static void *
 extra_allocation  (MessageContainer *mc,
                    size_t           size)
 {
-  ExtraAllocationListNode *n = malloc (sizeof (ExtraAllocationListNode) + size);
+  ExtraAllocationListNode *n = pbcrep_malloc (sizeof (ExtraAllocationListNode) + size);
   n->next = mc->extra_list;
   mc->extra_list = n;
   return (void *) (n + 1);
@@ -238,7 +238,7 @@ parser_allocate_repeated_value_array_list_node (PBCREP_Parser_JSON *parser)
     }
   else
     {
-      return malloc (sizeof (RepeatedValueArrayList) + REPEATED_VALUE_ARRAY_CHUNK_SIZE);
+      return pbcrep_malloc (sizeof (RepeatedValueArrayList) + REPEATED_VALUE_ARRAY_CHUNK_SIZE);
     }
 }
 
@@ -356,22 +356,23 @@ json__start_object   (void *callback_data)
       if (mc == NULL)
         {
           size_t extra_size = p->base.message_desc->sizeof_message - sizeof (ProtobufCMessage);
-          mc = malloc (sizeof (MessageContainer) + extra_size);
+          mc = pbcrep_malloc (sizeof (MessageContainer) + extra_size);
           mc->reusable_slab_size = p->reusable_slab_size;
-          mc->reusable_slab = malloc (p->reusable_slab_size);
+          mc->reusable_slab = pbcrep_malloc (p->reusable_slab_size);
         }
       else
         {
           p->message_container_recycling_list = mc->queue_next;
           if (PBCREP_UNLIKELY(mc->reusable_slab_size != p->reusable_slab_size))
             {
-              free (mc->reusable_slab);
+              pbcrep_free (mc->reusable_slab);
               mc->reusable_slab_size = p->reusable_slab_size;
-              mc->reusable_slab = malloc (p->reusable_slab_size);
+              mc->reusable_slab = pbcrep_malloc (p->reusable_slab_size);
             }
         }
       mc->used = 0;
       mc->extra_list = NULL;
+      mc->queue_next = NULL;
       p->in_progress = mc;
 
       p->stack[0].message = &mc->message;
@@ -1162,7 +1163,7 @@ pbc_parser_json_destruct (PBCREP_Parser      *parser)
         {
           RepeatedValueArrayList *kill = s->rep_list_backward;
           s->rep_list_backward = kill->next;
-          free (kill);
+          pbcrep_free (kill);
         }
     }
 
@@ -1180,7 +1181,7 @@ pbc_parser_json_destruct (PBCREP_Parser      *parser)
     {
       RepeatedValueArrayList *kill = p->recycled_repeated_nodes;
       p->recycled_repeated_nodes = kill->next;
-      free (kill);
+      pbcrep_free (kill);
     }
 
   /* The parser itself, and any objects allocated by pbcrep_parser_create_protected()
@@ -1233,6 +1234,7 @@ pbcrep_parser_new_json  (const ProtobufCMessageDescriptor  *message_desc,
 
   p->recycled_repeated_nodes = NULL;
   p->reusable_slab_size = INITIAL_REUSABLE_SLAB_SIZE;
+  p->message_container_recycling_list = NULL;
 
   return parser;
 } 
