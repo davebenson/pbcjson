@@ -1,4 +1,4 @@
-AM_CFLAGS = -I$(top_srcdir)/include $(LPBC_CFLAGS)
+AM_CFLAGS = -I$(top_srcdir)/include $(LPBC_CFLAGS) -O0
 test_programs = bin/t/json bin/t/pbcjson
 TESTS = $(test_programs)
 noinst_PROGRAMS = $(test_programs)

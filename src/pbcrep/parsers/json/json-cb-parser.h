@@ -128,10 +128,7 @@ struct JSON_Callbacks {
   bool (*number_value)  (unsigned number_length,
                          const char *number,
                          void *callback_data);
-  unsigned (*partial_string_value)
-                        (unsigned cur_string_length_in_bytes,
-                         const char *cur_string,
-                         void *callback_data);
+  // TODO: partial_string_value optional callback
   bool (*string_value)  (unsigned string_length,
                          const char *str,
                          void *callback_data);
@@ -152,7 +149,6 @@ struct JSON_Callbacks {
     prefix ## end_array    ## suffix,      \
     prefix ## object_key   ## suffix,      \
     prefix ## number_value ## suffix,      \
-    prefix ## partial_string_value ## suffix,\
     prefix ## string_value ## suffix,      \
     prefix ## boolean_value## suffix,      \
     prefix ## null_value   ## suffix,      \

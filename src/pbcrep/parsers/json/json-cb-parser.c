@@ -21,6 +21,7 @@ static void debug_printf(const char *format, ...)
 # define DEBUG_PRINTF(args)  
 #endif
 
+// Names of each byte.  See byte_name() for the 'public' interface.
 static const char byte_name_str[] =
 "NUL\0" "^A\0" "^B\0" "^C\0" "^D\0" "^E\0" "^F\0" "^G\0" "^H\0" "TAB\0"   /* 0 .. 9 */
 "NEWLINE\0" "^K\0" "^L\0" "CARRIAGE-RETURN\0" "^N\0" "^O\0" "^P\0" "^Q\0" "^R\0" "^S\0"   /* 10 .. 19 */
@@ -91,6 +92,7 @@ static const unsigned short byte_name_offsets[256] = {
 #define IS_HI_SURROGATE(u) (0xd800 <= (u) && (u) <= (0xd800 + 2047 - 64))
 #define IS_LO_SURROGATE(u) (0xdc00 <= (u) && (u) <= (0xdc00 + 1023))
 
+// WARNING: this may return values greater than 1<<20, which is a UTF-16 encoding error.
 #define COMBINE_SURROGATES(hi, lo)   (((uint32_t)((hi) - 0xd800) << 10)     \
                                      + (uint32_t)((lo) - 0xdc00) + 0x10000)
 
@@ -302,7 +304,7 @@ buffer_append (JSON_CallbackParser *parser,
 }
 
 static inline void
-buffer_append_c (JSON_CallbackParser *parser, uint8_t c)
+buffer_append_byte (JSON_CallbackParser *parser, uint8_t c)
 {
   if (parser->buffer_length + 1 > parser->buffer_alloced)
     {
@@ -499,7 +501,6 @@ do_callback_end_array (JSON_CallbackParser *parser)
 static inline bool
 do_callback_object_key  (JSON_CallbackParser *parser)
 {
-  DEBUG_PRINTF(("object_key ... bot object=%u",parser->stack_nodes[0].is_object));
   return parser->callbacks.object_key (parser->buffer_length,
                                        buffer_nul_terminate (parser),
                                        parser->callback_data);
@@ -743,6 +744,15 @@ nonws_nonascii:
   parser->error_code = JSON_CALLBACK_PARSER_ERROR_UNEXPECTED_CHAR;
   return SCAN_ERROR;
 }
+
+static ScanResult
+scan_whitespace_no_whitespace_allowed (JSON_CallbackParser *parser,
+                                       const uint8_t **p_at,
+                                       const uint8_t  *end)
+{
+  return SCAN_END;
+}
+
 static ScanResult
 scan_whitespace_generic(JSON_CallbackParser *parser,
                         const uint8_t **p_at,
@@ -956,6 +966,11 @@ json_callback_parser_new (const JSON_Callbacks *callbacks,
    && !options->disallow_extra_whitespace
    &&  options->ignore_unicode_whitespace)
     parser->whitespace_scanner = scan_whitespace_json5;
+  else
+  if ( !options->ignore_single_line_comments
+   &&  !options->ignore_multi_line_comments
+   &&   options->disallow_extra_whitespace)
+    parser->whitespace_scanner = scan_whitespace_no_whitespace_allowed;
   else
     parser->whitespace_scanner = scan_whitespace_generic;
     
@@ -1321,7 +1336,7 @@ generic_bareword_handler (JSON_CallbackParser *parser,
       && parser->buffer_length < bareword_len
       && (char)(*at) == bareword[parser->buffer_length])
     {
-      buffer_append_c (parser, *at);
+      buffer_append_byte (parser, *at);
       at++;
     }
   if (at == end)
@@ -1386,7 +1401,7 @@ scan_flat_value (JSON_CallbackParser *parser,
                   parser->error_code = JSON_CALLBACK_PARSER_ERROR_STRING_CONTROL_CHARACTER;
                   return SCAN_ERROR;
                 }
-              buffer_append_c (parser, *at);
+              buffer_append_byte (parser, *at);
               at++;
               continue;
             }
@@ -1420,45 +1435,45 @@ scan_flat_value (JSON_CallbackParser *parser,
         {
         // one character ecape codes handled here.
         case 'r':
-          buffer_append_c (parser, '\r');
+          buffer_append_byte (parser, '\r');
           at++;
           FLAT_VALUE_GOTO_STATE(STRING);
         case 't':
-          buffer_append_c (parser, '\t');
+          buffer_append_byte (parser, '\t');
           at++;
           FLAT_VALUE_GOTO_STATE(STRING);
         case 'n':
-          buffer_append_c (parser, '\n');
+          buffer_append_byte (parser, '\n');
           at++;
           FLAT_VALUE_GOTO_STATE(STRING);
         case 'b':
-          buffer_append_c (parser, '\b');
+          buffer_append_byte (parser, '\b');
           at++;
           FLAT_VALUE_GOTO_STATE(STRING);
         case 'v':
-          buffer_append_c (parser, '\v');
+          buffer_append_byte (parser, '\v');
           at++;
           FLAT_VALUE_GOTO_STATE(STRING);
         case 'f':
-          buffer_append_c (parser, '\f');
+          buffer_append_byte (parser, '\f');
           at++;
           FLAT_VALUE_GOTO_STATE(STRING);
         case '"': case '\\': case '\'':
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(STRING);
 
         case '0':      
           if (parser->options.permit_backslash_0)
             {
-              buffer_append_c (parser, 0);
+              buffer_append_byte (parser, 0);
               at++;
               FLAT_VALUE_GOTO_STATE(GOT_BACKSLASH_0);
             }
           else
             {
               // literal "0" digit
-              buffer_append_c (parser, '0');
+              buffer_append_byte (parser, '0');
               at++;
               FLAT_VALUE_GOTO_STATE(STRING);
             }
@@ -1639,6 +1654,13 @@ scan_flat_value (JSON_CallbackParser *parser,
               uint32_t unicode = COMBINE_SURROGATES (parser->hi_surrogate, code);
               uint8_t utf8[MAX_UTF8_LEN];
               unsigned utf8len = unicode_to_utf8(unicode, utf8);
+              if (utf8len == 0) {
+                // COMBINE_SURROGATES can return values just over 1<<20,
+                // which is the max supported by unicode.
+                *p_at = at;
+                parser->error_code = JSON_CALLBACK_PARSER_ERROR_UTF16_BAD_SURROGATE_PAIR;
+                return SCAN_ERROR;
+              }
               DEBUG_PRINTF(( "combined surrogates %04x %04x -> %06x",
                parser->hi_surrogate, code, unicode));
               buffer_append (parser, utf8len, utf8);
@@ -1718,19 +1740,19 @@ scan_flat_value (JSON_CallbackParser *parser,
     case FLAT_VALUE_STATE_GOT_SIGN:
       if (*at == '0')
         {
-          buffer_append_c (parser, '0');
+          buffer_append_byte (parser, '0');
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_0);
         }
       else if ('1' <= *at && *at <= '9')
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(IN_DIGITS);
         }
       else if (*at == '.' && parser->options.permit_leading_decimal_point)
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_LEADING_DECIMAL_POINT);
         }
@@ -1745,31 +1767,31 @@ scan_flat_value (JSON_CallbackParser *parser,
     case FLAT_VALUE_STATE_GOT_0:
       if ((*at == 'x' || *at == 'X') && parser->options.permit_hex_numbers)
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(IN_HEX_EMPTY);
         }
       else if (('0' <= *at && *at <= '7') && parser->options.permit_octal_numbers)
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(IN_OCTAL);
         }
       else if (*at == '.')
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_DECIMAL_POINT);
         }
       else if (*at == 'e' || *at == 'E')
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_E);
         }
       else if ('0' <= *at && *at <= '9')
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(IN_DIGITS);
         }
@@ -1791,7 +1813,7 @@ scan_flat_value (JSON_CallbackParser *parser,
         DEBUG_PRINTF(( "IN_DIGITS: at=%p end=%p *at=%c\n",at,end,*at));
         while ((at < end) && ('0' <= *at && *at <= '9'))
           {
-            buffer_append_c (parser, *at);
+            buffer_append_byte (parser, *at);
             at++;
           }
         if (at == end)
@@ -1801,13 +1823,13 @@ scan_flat_value (JSON_CallbackParser *parser,
           }
         if (*at == 'e' || *at == 'E')
           {
-            buffer_append_c (parser, *at);
+            buffer_append_byte (parser, *at);
             at++;
             FLAT_VALUE_GOTO_STATE(GOT_E);
           }
         else if (*at == '.')
           {
-            buffer_append_c (parser, *at);
+            buffer_append_byte (parser, *at);
             at++;
             FLAT_VALUE_GOTO_STATE(GOT_DECIMAL_POINT);
           }
@@ -1851,7 +1873,7 @@ scan_flat_value (JSON_CallbackParser *parser,
           parser->error_code = JSON_CALLBACK_PARSER_ERROR_BAD_NUMBER;
           return SCAN_END;
         }
-      buffer_append_c (parser, *at);
+      buffer_append_byte (parser, *at);
       at++;
       FLAT_VALUE_GOTO_STATE(IN_HEX);
 
@@ -1859,7 +1881,7 @@ scan_flat_value (JSON_CallbackParser *parser,
     case FLAT_VALUE_STATE_IN_HEX:
       while (at < end && IS_HEX_DIGIT(*at))
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
         }
       *p_at = at;
@@ -1871,7 +1893,7 @@ scan_flat_value (JSON_CallbackParser *parser,
     case FLAT_VALUE_STATE_GOT_E:
       if (*at == '-' || *at == '+')
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_E_DIGITS);
         }
@@ -1882,7 +1904,7 @@ scan_flat_value (JSON_CallbackParser *parser,
     case FLAT_VALUE_STATE_GOT_E_PM:
       if (IS_DIGIT (*at))
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_E_DIGITS);
         }
@@ -1896,7 +1918,7 @@ scan_flat_value (JSON_CallbackParser *parser,
     case FLAT_VALUE_STATE_GOT_E_DIGITS:
       while (at < end && IS_DIGIT (*at))
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
         }
       if (at == end)
@@ -1924,7 +1946,7 @@ scan_flat_value (JSON_CallbackParser *parser,
           *p_at = at;
           return SCAN_ERROR;
         }
-      buffer_append_c (parser, *at);
+      buffer_append_byte (parser, *at);
       at++;
       FLAT_VALUE_GOTO_STATE(GOT_DECIMAL_POINT_DIGITS);
 
@@ -1932,14 +1954,14 @@ scan_flat_value (JSON_CallbackParser *parser,
     case FLAT_VALUE_STATE_GOT_DECIMAL_POINT:
       if (IS_DIGIT (*at))
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_DECIMAL_POINT_DIGITS);
         }
       else if (parser->options.permit_trailing_decimal_point
             && (*at == 'e' || *at == 'E'))
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_E);
         }
@@ -1962,7 +1984,7 @@ scan_flat_value (JSON_CallbackParser *parser,
     case FLAT_VALUE_STATE_GOT_DECIMAL_POINT_DIGITS:
       while (at < end && IS_DIGIT (*at))
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
         }
       if (at == end)
@@ -1972,7 +1994,7 @@ scan_flat_value (JSON_CallbackParser *parser,
         }
       if (*at == 'e' || *at == 'E')
         {
-          buffer_append_c (parser, *at);
+          buffer_append_byte (parser, *at);
           at++;
           FLAT_VALUE_GOTO_STATE(GOT_E);
         }
@@ -2436,7 +2458,7 @@ json_callback_parser_feed (JSON_CallbackParser *parser,
           CASE(IN_OBJECT_BARE_FIELDNAME):
             while (at < end && (IS_ASCII_ALPHA (*at) || *at == '_'))
               {
-                buffer_append_c (parser, *at);
+                buffer_append_byte (parser, *at);
                 at++;
               }
             if (at == end)
@@ -2780,8 +2802,11 @@ json_callback_parser_get_error_info(JSON_CallbackParser *parser)
   return parser->error_code;
 }
 
+//JSON_CALLBACK_PARSER_FUNC_DEF
 //void
-//json_callback_parser_reset (JSON_CallbackParser *parser);
+//json_callback_parser_reset (JSON_CallbackParser *parser)
+//{
+//}
 
 JSON_CALLBACK_PARSER_FUNC_DEF
 void
