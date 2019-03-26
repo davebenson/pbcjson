@@ -17,6 +17,42 @@ typedef enum
   PBCREP_STDIO_CLOSE_METHOD_PCLOSE              // call pclose()
 } PBCREP_StdioCloseMethod;
 
+
+//
+// PBCREP_LengthPrefixed_Format
+//
+// LE=little-endian BE=big-endian
+//
+typedef enum
+{
+  PBCREP_LENGTH_PREFIXED_UINT8,
+  PBCREP_LENGTH_PREFIXED_UINT16_LE,
+  PBCREP_LENGTH_PREFIXED_UINT24_LE,
+  PBCREP_LENGTH_PREFIXED_UINT32_LE,
+  //PBCREP_LENGTH_PREFIXED_UINT48_LE,
+  //PBCREP_LENGTH_PREFIXED_UINT64_LE,
+  PBCREP_LENGTH_PREFIXED_UINT16_BE,
+  PBCREP_LENGTH_PREFIXED_UINT24_BE,
+  PBCREP_LENGTH_PREFIXED_UINT32_BE,
+  //PBCREP_LENGTH_PREFIXED_UINT48_BE,
+  //PBCREP_LENGTH_PREFIXED_UINT64_BE,
+  PBCREP_LENGTH_PREFIXED_B128,
+  PBCREP_LENGTH_PREFIXED_B128_BE
+} PBCREP_LengthPrefixed_Format;
+
+
+//
+// The result of a read operation.
+//
+typedef enum
+{
+  PBCREP_READ_RESULT_OK,
+  PBCREP_READ_RESULT_EOF,
+  PBCREP_READ_RESULT_BLOCKED,
+  PBCREP_READ_RESULT_ERROR
+} PBCREP_ReadResult;
+
+
 /* Include structures common to the printers and parsers. */
 #include "pbcrep/feature-macros.h"
 #include "pbcrep/inline.h"

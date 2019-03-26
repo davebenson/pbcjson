@@ -21,3 +21,5 @@ PBCREP_Error *pbcrep_error_new_printf  (const char *code,
                                         const char *message,
                                         ...) PBCREP_GNUC_PRINTF(2,3);
 void          pbcrep_error_destroy     (PBCREP_Error *error);
+
+
